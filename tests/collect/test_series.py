@@ -6,7 +6,12 @@ ECOS는 같은 ITEM_CODE를 주기(D/M/Q/A)마다 별도로 제공한다. 따라
 
 import pytest
 
-from fingate.collect.series import SERIES, SeriesSpec, series_by_id
+from fingate.collect.series import (
+    PERCENT_PER_ANNUM,
+    SERIES,
+    SeriesSpec,
+    series_by_id,
+)
 
 
 def test_every_series_has_a_unique_id():
@@ -44,7 +49,8 @@ def test_rejects_unsupported_cycle():
             stat_code="722Y001",
             item_code="0101000",
             cycle="H",
-            unit="%",
+            unit=PERCENT_PER_ANNUM,
+            source_unit="연%",
             freshness_sla_days=5,
         )
 
@@ -58,7 +64,8 @@ def test_rejects_non_positive_freshness_sla():
             stat_code="722Y001",
             item_code="0101000",
             cycle="D",
-            unit="%",
+            unit=PERCENT_PER_ANNUM,
+            source_unit="연%",
             freshness_sla_days=0,
         )
 
@@ -71,5 +78,11 @@ def test_daily_series_have_tighter_sla_than_monthly():
     assert max(daily) < min(monthly)
 
 
-def test_all_rate_series_are_percent():
-    assert all(spec.unit == "%" for spec in SERIES)
+def test_all_rate_series_normalize_to_percent_per_annum():
+    assert all(spec.unit == PERCENT_PER_ANNUM for spec in SERIES)
+
+
+def test_source_units_are_not_assumed_consistent():
+    """같은 연이율인데도 ECOS는 "연%"와 "연리%"를 섞어 쓴다 (실측)."""
+    labels = {spec.source_unit for spec in SERIES}
+    assert labels == {"연%", "연리%"}
