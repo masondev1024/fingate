@@ -1,0 +1,152 @@
+{
+  "generated_at": "2026-09-07T07:09:23+00:00",
+  "series": "base_rate_daily",
+  "baseline_rows": 36,
+  "summary_all": {
+    "total": 11,
+    "naive_reached": 10,
+    "gated_reached": 0,
+    "naive_rate": 0.9090909090909091,
+    "gated_rate": 0.0,
+    "blocked_by_layer": {
+      "response": 4,
+      "quality": 3,
+      "schema": 4
+    },
+    "naive_outcomes": {
+      "served_bad_data": 10,
+      "crashed": 1
+    },
+    "catalog_size": 11
+  },
+  "summary_pre_registered": {
+    "total": 9,
+    "naive_reached": 8,
+    "gated_reached": 0,
+    "naive_rate": 0.8888888888888888,
+    "gated_rate": 0.0,
+    "blocked_by_layer": {
+      "response": 3,
+      "quality": 3,
+      "schema": 3
+    },
+    "naive_outcomes": {
+      "served_bad_data": 8,
+      "crashed": 1
+    },
+    "catalog_size": 11
+  },
+  "clean_data_reaches_serving": true,
+  "trials": [
+    {
+      "corruption_id": "ecos_auth_error",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "response",
+      "detail": "INFO-100",
+      "pre_registered": true,
+      "name": "ECOS 인증 실패 응답"
+    },
+    {
+      "corruption_id": "ecos_unknown_table",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "response",
+      "detail": "INFO-200",
+      "pre_registered": true,
+      "name": "존재하지 않는 통계표 코드"
+    },
+    {
+      "corruption_id": "dart_zip_error_xml",
+      "naive_reached_serving": false,
+      "naive_outcome": "crashed",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "response",
+      "detail": "NOT_ZIP",
+      "pre_registered": true,
+      "name": "3.6MB zip 자리에 150B 오류 XML"
+    },
+    {
+      "corruption_id": "value_outlier",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "quality",
+      "detail": "",
+      "pre_registered": true,
+      "name": "값 이상치"
+    },
+    {
+      "corruption_id": "stale_series",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "quality",
+      "detail": "",
+      "pre_registered": true,
+      "name": "신선도 위반"
+    },
+    {
+      "corruption_id": "duplicate_period",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "quality",
+      "detail": "",
+      "pre_registered": true,
+      "name": "중복 키"
+    },
+    {
+      "corruption_id": "schema_field_removed",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "schema",
+      "detail": "",
+      "pre_registered": true,
+      "name": "스키마 변경 — 필드 삭제"
+    },
+    {
+      "corruption_id": "schema_type_changed",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "schema",
+      "detail": "",
+      "pre_registered": true,
+      "name": "스키마 변경 — 타입 변경"
+    },
+    {
+      "corruption_id": "partial_missing",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "schema",
+      "detail": "",
+      "pre_registered": true,
+      "name": "부분 결측"
+    },
+    {
+      "corruption_id": "dart_throttled",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "response",
+      "detail": "101",
+      "pre_registered": false,
+      "name": "DART 접근 제한"
+    },
+    {
+      "corruption_id": "series_swapped",
+      "naive_reached_serving": true,
+      "naive_outcome": "served_bad_data",
+      "gated_reached_serving": false,
+      "blocked_by_layer": "schema",
+      "detail": "",
+      "pre_registered": false,
+      "name": "다른 시계열이 반환됨"
+    }
+  ]
+}
