@@ -13,6 +13,7 @@ import pytest
 
 from fingate.collect.dart import DartCollector, ReportCode
 from fingate.collect.ecos import ContractViolation
+from fingate.collect.pacing import Pacer
 from fingate.collect.raw_store import RawStore
 
 API_KEY = "SECRET_DART_KEY"
@@ -157,3 +158,24 @@ def test_api_key_never_leaks(tmp_path):
     assert API_KEY not in str(excinfo.value)
     assert API_KEY not in excinfo.value.raw.meta_path.read_text(encoding="utf-8")
     assert API_KEY not in str(excinfo.value.raw.path)
+
+
+def test_paces_successive_calls(tmp_path):
+    slept: list[float] = []
+    now = iter([0.0, 0.2, 0.2])
+    pacer = Pacer(min_interval_seconds=1.5, sleep=slept.append, monotonic=lambda: next(now))
+    collector = DartCollector(
+        API_KEY, RawStore(tmp_path), fetch=lambda url: FINANCIAL_BODY, pacer=pacer
+    )
+    collector.collect_financials("00113058", 2023, ReportCode.ANNUAL)
+    collector.collect_financials("00113058", 2023, ReportCode.ANNUAL)
+    assert slept == [pytest.approx(1.3, abs=1e-6)]
+
+
+def test_throttled_status_is_retryable():
+    """101은 일시 차단이므로 재시도 대상이다. 010(잘못된 키)은 아니다."""
+    from fingate.collect.dart import is_transient
+
+    assert is_transient(ContractViolation("101", "throttled", None)) is True
+    assert is_transient(ContractViolation("010", "bad key", None)) is False
+    assert is_transient(ContractViolation("013", "no data", None)) is False

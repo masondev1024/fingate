@@ -23,6 +23,7 @@ from typing import Any
 
 from ..contracts.response import verify_dart_json, verify_dart_zip
 from .ecos import ContractViolation
+from .pacing import Pacer
 from .raw_store import RawRecord, RawStore
 
 BASE_URL = "https://opendart.fss.or.kr/api"
@@ -30,6 +31,23 @@ DEFAULT_TIMEOUT_SECONDS = 90
 # 정상 응답은 약 3.6MB, 오류 응답은 150바이트다. 그 사이 어디든 임계로 쓸 수
 # 있으나 부분 수신도 걸러내도록 넉넉히 잡는다.
 DEFAULT_MIN_ZIP_BYTES = 100_000
+
+# 2026-09-07 실측: 응답 p95는 0.60s(재무제표), 0.88s(3.4MB zip)로 빠르다.
+# 페이싱 없이 25건을 연속 호출했더니(약 8 req/s) 모든 요청이 status=101로
+# 차단되었다. 차단 임계는 공개되어 있지 않으므로 보수적으로 잡고,
+# 실제 보장은 101 발생 시 지수 백오프 재시도가 맡는다.
+DEFAULT_MIN_INTERVAL_SECONDS = 1.5
+
+# 일시 차단. 시간이 지나면 풀리므로 재시도한다.
+TRANSIENT_STATUS_CODES = frozenset({"101", "020", "800"})
+
+
+def is_transient(error: ContractViolation) -> bool:
+    """재시도해도 되는 실패인지 판정한다.
+
+    영구 실패(잘못된 인증키, 존재하지 않는 코드)를 재시도하면 차단만 길어진다.
+    """
+    return error.code in TRANSIENT_STATUS_CODES
 
 
 class ReportCode(StrEnum):
@@ -76,10 +94,12 @@ class DartCollector:
         api_key: str,
         raw_store: RawStore,
         fetch: Callable[[str], bytes] = _urlopen_fetch,
+        pacer: Pacer | None = None,
     ) -> None:
         self._api_key = api_key
         self._raw_store = raw_store
         self._fetch = fetch
+        self._pacer = pacer or Pacer(DEFAULT_MIN_INTERVAL_SECONDS)
 
     def _url(self, endpoint: str, params: dict[str, str]) -> str:
         query = urllib.parse.urlencode({"crtfc_key": self._api_key, **params})
@@ -90,6 +110,7 @@ class DartCollector:
         listed_only: bool = False,
         min_zip_bytes: int = DEFAULT_MIN_ZIP_BYTES,
     ) -> CorpCodeResult:
+        self._pacer.wait()
         body = self._fetch(self._url("corpCode.xml", {}))
         verdict = verify_dart_zip(body, min_bytes=min_zip_bytes)
         raw = self._raw_store.put(
@@ -130,6 +151,7 @@ class DartCollector:
             "bsns_year": str(year),
             "reprt_code": report_code.value,
         }
+        self._pacer.wait()
         body = self._fetch(self._url("fnlttSinglAcnt.json", params))
         verdict = verify_dart_json(body)
         raw = self._raw_store.put(

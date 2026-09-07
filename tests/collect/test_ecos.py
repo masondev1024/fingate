@@ -9,6 +9,7 @@ import json
 import pytest
 
 from fingate.collect.ecos import ContractViolation, EcosCollector, EcosRequest
+from fingate.collect.pacing import Pacer
 from fingate.collect.raw_store import RawStore
 
 API_KEY = "SECRET_ECOS_KEY"
@@ -130,3 +131,19 @@ def test_missing_row_key_is_a_contract_violation(tmp_path):
     with pytest.raises(ContractViolation) as excinfo:
         collector.collect(_request())
     assert excinfo.value.code == "NO_ROWS"
+
+
+def test_paces_successive_calls(tmp_path):
+    """수집기는 호출 사이에 간격을 강제해야 한다."""
+    slept: list[float] = []
+    now = iter([0.0, 0.1, 0.1])
+    pacer = Pacer(min_interval_seconds=1.0, sleep=slept.append, monotonic=lambda: next(now))
+    collector = EcosCollector(
+        api_key=API_KEY,
+        raw_store=RawStore(tmp_path),
+        fetch=lambda url: SUCCESS_BODY,
+        pacer=pacer,
+    )
+    collector.collect(_request())
+    collector.collect(_request())
+    assert slept == [pytest.approx(0.9, abs=1e-6)]
