@@ -104,7 +104,7 @@
 ```bash
 cp .env.example .env    # ECOS·DART 인증키를 채운다
 uv sync --extra dev
-make ci                 # lint + 181 tests
+make ci                 # lint + 196 tests
 
 # 파이프라인 전체 실행 (수집 → 계약 → 게이트 → 서빙 → 적재)
 uv run fingate-run
@@ -128,11 +128,28 @@ uv run fingate-gate reject  <id> --by 이름 --note "수집 오류로 판단"
 사유 없는 결정은 거부된다. 모든 결정은 감사 로그에 남고, 대장 상태는 그 로그에서
 복원되므로 파이프라인과 별도 프로세스에서 승인해도 반영된다.
 
+### 조회
+
+```bash
+uv run fingate-query serving                 # 금리 x 재무 서빙 테이블
+uv run fingate-query change --corp 한화생명    # 분기 대비 변화 (윈도우 함수)
+uv run fingate-query sensitivity             # 금리 민감도
+uv run fingate-query freshness               # 시계열 신선도
+```
+
+`sensitivity` 는 상관계수와 함께 **비교에 쓴 분기 수**를 낸다. IFRS17 시행(2023)으로
+보험사 재무가 2023년부터만 존재해 시점이 10개뿐이므로, 현재 상관계수는 신호가 아니라
+잡음이다. CLI가 그 경고를 함께 출력한다.
+
 ### 실험 재현
 
 ```bash
 uv run pytest tests/experiment -q
 ```
+
+## 라이선스
+
+MIT
 
 인증키는 [ECOS](https://ecos.bok.or.kr/api/)와 [DART](https://opendart.fss.or.kr/)에서
 무료로 발급받는다. `.env` 는 커밋되지 않으며, 수집기는 인증키를 원본 저장소·메타데이터·

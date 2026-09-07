@@ -192,3 +192,19 @@ def test_persists_to_disk(tmp_path):
     path = tmp_path / "fingate.duckdb"
     Warehouse(path).load_observations([_obs(3)], loaded_at=NOW)
     assert Warehouse(path).count("bronze_rate_observation") == 1
+
+
+def test_writes_are_visible_to_a_second_connection_after_close(tmp_path):
+    """앞선 연결이 열려 있으면 CLI 같은 별도 연결에서 쓰기가 보이지 않는다."""
+    path = tmp_path / "fingate.duckdb"
+    first = Warehouse(path)
+    first.load_observations([_obs(3)], loaded_at=NOW)
+    first.close()
+    assert Warehouse(path).count("bronze_rate_observation") == 1
+
+
+def test_can_be_used_as_a_context_manager(tmp_path):
+    path = tmp_path / "fingate.duckdb"
+    with Warehouse(path) as warehouse:
+        warehouse.load_observations([_obs(3)], loaded_at=NOW)
+    assert Warehouse(path).count("bronze_rate_observation") == 1

@@ -129,6 +129,50 @@ SCHEMA_DDL = (
     LEFT JOIN rates r ON r.year = f.year AND r.quarter = f.quarter
     LEFT JOIN q3_cumulative c ON c.corp_code = f.corp_code AND c.year = f.year
     """,
+    """
+    CREATE OR REPLACE VIEW analytics_insurer_quarterly_change AS
+    SELECT
+        corp_code, corp_name, year, quarter,
+        total_assets,
+        insurance_contract_liabilities,
+        net_income_quarter,
+        base_rate,
+        -- 이전 분기가 없으면 NULL로 둔다. 0으로 채우면 "변화 없음"으로 오인된다.
+        total_assets - lag(total_assets) OVER w AS assets_qoq_delta,
+        100.0 * (total_assets - lag(total_assets) OVER w)
+            / nullif(lag(total_assets) OVER w, 0) AS assets_qoq_pct,
+        base_rate - lag(base_rate) OVER w AS rate_qoq_delta,
+        avg(net_income_quarter) OVER (
+            PARTITION BY corp_code ORDER BY year, quarter
+            ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+        ) AS net_income_4q_avg
+    FROM serving_insurer_rate_context
+    WINDOW w AS (PARTITION BY corp_code ORDER BY year, quarter)
+    """,
+    """
+    CREATE OR REPLACE VIEW analytics_rate_sensitivity AS
+    SELECT
+        corp_name,
+        count(*) AS quarters_compared,
+        corr(rate_qoq_delta, assets_qoq_pct) AS correlation,
+        avg(assets_qoq_pct)                  AS avg_assets_qoq_pct,
+        avg(rate_qoq_delta)                  AS avg_rate_qoq_delta
+    FROM analytics_insurer_quarterly_change
+    WHERE rate_qoq_delta IS NOT NULL AND assets_qoq_pct IS NOT NULL
+    GROUP BY corp_name
+    """,
+    """
+    -- 신선도는 current_date가 아니라 명시적 as_of 기준으로 잰다.
+    -- check_quality도 as_of를 받으므로 기준이 한 곳으로 모인다.
+    CREATE OR REPLACE VIEW analytics_series_freshness AS
+    SELECT
+        series_id,
+        max(period)   AS latest_period,
+        min(period)   AS earliest_period,
+        count(*)      AS observation_count
+    FROM bronze_rate_observation
+    GROUP BY series_id
+    """,
 )
 
 
@@ -143,6 +187,20 @@ class Warehouse:
         self._connection = duckdb.connect(str(path))
         for statement in SCHEMA_DDL:
             self._connection.execute(statement)
+
+    def close(self) -> None:
+        """연결을 닫는다.
+
+        같은 파일에 두 번째 연결을 여는 경우(예: CLI가 파이프라인 결과를 읽을 때)
+        앞선 연결이 열려 있으면 쓰기가 보이지 않는다.
+        """
+        self._connection.close()
+
+    def __enter__(self) -> "Warehouse":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def query(self, sql: str, parameters: tuple = ()) -> list[dict[str, Any]]:
         cursor = self._connection.execute(sql, parameters)
@@ -270,6 +328,19 @@ class Warehouse:
         관측 수를 함께 내보내 표본이 얇은 분기를 식별할 수 있게 한다.
         """
         return self.query("SELECT * FROM silver_rate_quarterly ORDER BY series_id, year, quarter")
+
+    def freshness(self, as_of: dt.date) -> list[dict[str, Any]]:
+        """시계열별 신선도. 경과일은 호출자가 준 기준일로 계산한다."""
+        return self.query(
+            """
+            SELECT
+                f.series_id, f.latest_period, f.earliest_period, f.observation_count,
+                CAST(? - f.latest_period AS INTEGER) AS age_days
+            FROM analytics_series_freshness f
+            ORDER BY f.series_id
+            """,
+            (as_of,),
+        )
 
     def serving_rows(self) -> list[dict[str, Any]]:
         """금리 환경과 보험사 재무를 분기 축으로 조인한 서빙 테이블.
