@@ -12,7 +12,7 @@ import datetime as dt
 import sys
 from pathlib import Path
 
-from .ledger import ExceptionLedger, ExceptionStatus
+from .ledger import ExceptionLedger, ExceptionStatus, concurrence
 
 
 def _parse_now(value: str | None) -> dt.datetime:
@@ -27,9 +27,51 @@ def _print_row(staged) -> None:
     )
 
 
+def _recommendation_at_decision_time(args, exception_id: str, now: dt.datetime) -> str:
+    """결정 시점에 에이전트가 무엇을 권고했는지 시스템이 직접 계산해 남긴다.
+
+    승인자에게 "무엇을 봤느냐"고 물어 적게 하면 자기 신고가 되고, 그러면
+    거수기 탐지가 무의미해진다. 나중에 사람이 에이전트와 다른 판단을 한 적이
+    있는지 감사하려면 기록이 자기 신고여서는 안 된다.
+
+    근거를 모으지 못하는 상황에서도 승인 자체는 막지 않는다. 게이트를 여는
+    유일한 경로를 부수적인 실패로 잠그면 안 된다. 권고 없음으로 기록한다.
+
+    창고가 없으면 열지 않고 바로 포기한다. DuckDB는 없는 경로를 조용히 새로
+    만들기 때문에, 경로에 오타가 나면 빈 DB가 생기고 그 빈 DB에서 나온
+    "근거 없음"이 진짜 판정처럼 기록된다. 모으지 못한 것과 모아서 없는 것은
+    감사에서 전혀 다른 의미다.
+    """
+    # 지연 import: gate 계층이 review 계층에 구조적으로 의존하지 않는다.
+    from ..collect.raw_store import RawStore
+    from ..review.assemble import review_exception
+    from ..serve.snapshot import ServingStore
+    from ..warehouse.store import Warehouse
+
+    if str(args.warehouse) != ":memory:" and not Path(args.warehouse).exists():
+        return ""
+
+    try:
+        with Warehouse(args.warehouse) as warehouse:
+            review = review_exception(
+                exception_id,
+                ledger=ExceptionLedger(args.audit),
+                warehouse=warehouse,
+                raw_store=RawStore(args.raw),
+                serving=ServingStore(args.serving),
+                now=now,
+            )
+        return str(review.recommendation.verdict)
+    except Exception:  # noqa: BLE001 - 근거 수집 실패가 승인을 막아서는 안 된다
+        return ""
+
+
 def main(argv: list[str] | None = None) -> int:
+    from ..review.cli import add_source_arguments
+
     parser = argparse.ArgumentParser(prog="fingate-gate")
     parser.add_argument("--audit", type=Path, default=Path("data/audit.jsonl"))
+    add_source_arguments(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     listing = subparsers.add_parser("list", help="예외 목록")
@@ -37,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
 
     show = subparsers.add_parser("show", help="근거 상세")
     show.add_argument("exception_id")
+
+    subparsers.add_parser("audit", help="사람의 결정이 에이전트 권고와 얼마나 일치했나")
 
     for name, help_text in (("approve", "승인"), ("reject", "반려")):
         decide = subparsers.add_parser(name, help=help_text)
@@ -47,6 +91,23 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     ledger = ExceptionLedger(args.audit)
+
+    if args.command == "audit":
+        report = concurrence(ledger)
+        if report.rate is None:
+            print("권고와 함께 결정된 건이 없다. 일치도를 계산할 수 없다.")
+            return 0
+        print(f"권고와 함께 결정된 건 : {report.decided_with_recommendation}")
+        print(f"권고와 일치           : {report.agreed}")
+        print(f"권고와 불일치         : {report.disagreed}")
+        print(f"일치율                : {report.rate:.3f}")
+        if report.rubber_stamp_risk:
+            print()
+            print(
+                "주의: 표본 전체에서 권고와 100% 일치했다. 사람이 근거를 보지 않고\n"
+                "권고를 그대로 승인하고 있을 수 있다. 승인 절차가 형식으로 굳는 신호다."
+            )
+        return 0
 
     if args.command == "list":
         status = ExceptionStatus(args.status) if args.status else ExceptionStatus.PENDING
@@ -77,9 +138,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  [{finding.rule}] {period}  {finding.detail}")
             return 0
 
+        now = _parse_now(args.now)
         decide = ledger.approve if args.command == "approve" else ledger.reject
         result = decide(
-            args.exception_id, decided_by=args.by, note=args.note, now=_parse_now(args.now)
+            args.exception_id,
+            decided_by=args.by,
+            note=args.note,
+            now=now,
+            recommendation=_recommendation_at_decision_time(args, args.exception_id, now),
         )
         print(f"{result.status}: {result.exception_id} by {result.decided_by}")
         return 0

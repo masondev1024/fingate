@@ -12,6 +12,7 @@ dependencies = [
 fingate-run = "fingate.pipeline:main"
 fingate-gate = "fingate.gate.cli:main"
 fingate-query = "fingate.warehouse.query_cli:main"
+fingate-review = "fingate.review.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.2", "ruff>=0.5"]
