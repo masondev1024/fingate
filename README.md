@@ -104,8 +104,34 @@
 ```bash
 cp .env.example .env    # ECOS·DART 인증키를 채운다
 uv sync --extra dev
-make ci                 # lint + 138 tests
-uv run pytest tests/experiment -q   # fault injection 실험
+make ci                 # lint + 190 tests
+
+# 파이프라인 전체 실행 (수집 → 계약 → 게이트 → 서빙 → 적재)
+uv run fingate-run
+```
+
+실행하면 금리 4,132행과 보험 5사 재무 900행이 적재되고 서빙 테이블 50행이 만들어진다.
+실측 소요 1분 41초.
+
+### 차단된 건을 승인하기
+
+품질 계약 위반은 자동으로 서빙을 막는다. 정당한 급변(정책금리 인상, 회계기준 변경)은
+담당자가 근거를 보고 통과시킨다.
+
+```bash
+uv run fingate-gate list                    # 승인 대기 목록
+uv run fingate-gate show <id>               # 위반 근거와 계보
+uv run fingate-gate approve <id> --by 이름 --note "금통위 인상 확인"
+uv run fingate-gate reject  <id> --by 이름 --note "수집 오류로 판단"
+```
+
+사유 없는 결정은 거부된다. 모든 결정은 감사 로그에 남고, 대장 상태는 그 로그에서
+복원되므로 파이프라인과 별도 프로세스에서 승인해도 반영된다.
+
+### 실험 재현
+
+```bash
+uv run pytest tests/experiment -q
 ```
 
 인증키는 [ECOS](https://ecos.bok.or.kr/api/)와 [DART](https://opendart.fss.or.kr/)에서

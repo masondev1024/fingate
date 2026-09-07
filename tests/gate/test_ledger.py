@@ -146,3 +146,50 @@ def test_audit_log_records_expiry_too(tmp_path):
         for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert actions == ["staged", "expired"]
+
+
+def test_ledger_state_survives_a_new_instance(tmp_path):
+    """감사 로그가 진실의 출처다. 새 프로세스에서도 대기 건이 보여야 한다.
+
+    대장이 메모리에만 있으면 승인 CLI가 별도 프로세스에서 아무것도 볼 수 없다.
+    """
+    staged = _staged(_ledger(tmp_path))
+    reopened = ExceptionLedger(audit_path=tmp_path / "audit.jsonl")
+    assert len(reopened.list(status=ExceptionStatus.PENDING)) == 1
+    assert reopened.get(staged.exception_id).series_id == "base_rate_daily"
+
+
+def test_replay_restores_findings(tmp_path):
+    staged = _staged(_ledger(tmp_path))
+    reopened = ExceptionLedger(audit_path=tmp_path / "audit.jsonl")
+    restored = reopened.get(staged.exception_id)
+    assert len(restored.findings) == 1
+    assert restored.findings[0].rule == "JUMP_EXCEEDED"
+    assert restored.findings[0].period == dt.date(2026, 9, 4)
+
+
+def test_replay_restores_decisions(tmp_path):
+    ledger = _ledger(tmp_path)
+    staged = _staged(ledger)
+    ledger.approve(staged.exception_id, decided_by="mason", note="확인함", now=LATER)
+
+    reopened = ExceptionLedger(audit_path=tmp_path / "audit.jsonl")
+    restored = reopened.get(staged.exception_id)
+    assert restored.status is ExceptionStatus.APPROVED
+    assert restored.decided_by == "mason"
+    assert restored.decision_note == "확인함"
+    assert reopened.is_cleared("base_rate_daily", now=LATER) is True
+
+
+def test_replay_survives_expiry_entries(tmp_path):
+    ledger = _ledger(tmp_path)
+    staged = _staged(ledger)
+    with pytest.raises(ValueError):
+        ledger.approve(staged.exception_id, decided_by="mason", note="늦음", now=AFTER_TTL)
+
+    reopened = ExceptionLedger(audit_path=tmp_path / "audit.jsonl")
+    assert reopened.get(staged.exception_id).status is ExceptionStatus.EXPIRED
+
+
+def test_replay_of_missing_log_starts_empty(tmp_path):
+    assert ExceptionLedger(audit_path=tmp_path / "nothing.jsonl").list() == []

@@ -58,12 +58,52 @@ class StagedException:
 
 
 class ExceptionLedger:
-    """예외 대장. 모든 상태 변화를 감사 로그에 남긴다."""
+    """예외 대장. 감사 로그가 진실의 출처다.
+
+    상태를 메모리에만 두면 승인 CLI가 별도 프로세스에서 아무것도 볼 수 없다.
+    모든 상태 전이를 append-only 로그에 남기고, 시작할 때 재생해 복원한다.
+    감사가 필요한 시스템에서는 로그가 부산물이 아니라 원본이어야 한다.
+    """
 
     def __init__(self, audit_path: Path) -> None:
         self._audit_path = Path(audit_path)
         self._audit_path.parent.mkdir(parents=True, exist_ok=True)
         self._entries: dict[str, StagedException] = {}
+        self._replay()
+
+    def _replay(self) -> None:
+        """감사 로그를 재생해 대장을 복원한다. 마지막 항목이 최종 상태다."""
+        if not self._audit_path.exists():
+            return
+        for line in self._audit_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            decided_at = entry.get("decided_at")
+            self._entries[entry["exception_id"]] = StagedException(
+                exception_id=entry["exception_id"],
+                series_id=entry["series_id"],
+                findings=tuple(
+                    QualityFinding(
+                        series_id=entry["series_id"],
+                        rule=finding["rule"],
+                        detail=finding["detail"],
+                        period=(
+                            dt.date.fromisoformat(finding["period"])
+                            if finding.get("period")
+                            else None
+                        ),
+                    )
+                    for finding in entry["findings"]
+                ),
+                request_id=entry["request_id"],
+                created_at=dt.datetime.fromisoformat(entry["created_at"]),
+                expires_at=dt.datetime.fromisoformat(entry["expires_at"]),
+                status=ExceptionStatus(entry["status"]),
+                decided_by=entry.get("decided_by", ""),
+                decision_note=entry.get("note", ""),
+                decided_at=dt.datetime.fromisoformat(decided_at) if decided_at else None,
+            )
 
     def _audit(self, action: str, staged: StagedException) -> None:
         entry = {

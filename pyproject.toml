@@ -8,6 +8,10 @@ dependencies = [
     "python-dateutil>=2.9",
 ]
 
+[project.scripts]
+fingate-run = "fingate.pipeline:main"
+fingate-gate = "fingate.gate.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.2", "ruff>=0.5"]
 
