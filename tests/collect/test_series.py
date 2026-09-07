@@ -52,6 +52,9 @@ def test_rejects_unsupported_cycle():
             unit=PERCENT_PER_ANNUM,
             source_unit="연%",
             freshness_sla_days=5,
+            min_value=-1.0,
+            max_value=15.0,
+            max_jump=0.75,
         )
 
 
@@ -67,6 +70,9 @@ def test_rejects_non_positive_freshness_sla():
             unit=PERCENT_PER_ANNUM,
             source_unit="연%",
             freshness_sla_days=0,
+            min_value=-1.0,
+            max_value=15.0,
+            max_jump=0.75,
         )
 
 
@@ -86,3 +92,44 @@ def test_source_units_are_not_assumed_consistent():
     """같은 연이율인데도 ECOS는 "연%"와 "연리%"를 섞어 쓴다 (실측)."""
     labels = {spec.source_unit for spec in SERIES}
     assert labels == {"연%", "연리%"}
+
+
+def test_rejects_inverted_value_range():
+    with pytest.raises(ValueError, match="min_value"):
+        SeriesSpec(
+            series_id="x",
+            name="x",
+            kind="policy",
+            stat_code="722Y001",
+            item_code="0101000",
+            cycle="D",
+            unit=PERCENT_PER_ANNUM,
+            source_unit="연%",
+            freshness_sla_days=5,
+            min_value=10.0,
+            max_value=1.0,
+            max_jump=0.75,
+        )
+
+
+def test_rejects_non_positive_max_jump():
+    with pytest.raises(ValueError, match="max_jump"):
+        SeriesSpec(
+            series_id="x",
+            name="x",
+            kind="policy",
+            stat_code="722Y001",
+            item_code="0101000",
+            cycle="D",
+            unit=PERCENT_PER_ANNUM,
+            source_unit="연%",
+            freshness_sla_days=5,
+            min_value=-1.0,
+            max_value=15.0,
+            max_jump=0.0,
+        )
+
+
+def test_jump_thresholds_exceed_observed_policy_big_step():
+    """기준금리 빅스텝 0.50%p는 정상이므로 임계는 그보다 위여야 한다."""
+    assert series_by_id("base_rate_daily").max_jump > 0.50
