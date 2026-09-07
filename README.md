@@ -104,7 +104,7 @@
 ```bash
 cp .env.example .env    # ECOS·DART 인증키를 채운다
 uv sync --extra dev
-make ci                 # lint + 190 tests
+make ci                 # lint + 181 tests
 
 # 파이프라인 전체 실행 (수집 → 계약 → 게이트 → 서빙 → 적재)
 uv run fingate-run
