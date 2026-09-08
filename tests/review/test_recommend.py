@@ -105,3 +105,36 @@ def test_no_recommendation_value_reads_as_an_executed_decision(value):
     구분할 수 없게 된다.
     """
     assert str(value) not in ("approved", "rejected")
+
+
+def test_conflicting_evidence_is_not_resolved_by_picking_a_side():
+    """동행률과 스프레드가 갈리면 한쪽을 임의로 채택하지 않는다.
+
+    둘은 다른 질문에 답한다. 갈린다는 사실 자체가 승인자에게 필요한 정보다.
+    """
+    result = recommend(
+        [
+            _evidence("peer_corroboration", ProbeVerdict.SUPPORTS_REAL),
+            _evidence("anchor_spread", ProbeVerdict.SUPPORTS_DEFECT),
+        ]
+    )
+
+    assert result.verdict is Recommendation.INSUFFICIENT_EVIDENCE
+    assert "peer_corroboration" in result.because
+    assert "anchor_spread" in result.because
+
+
+def test_the_anchor_alone_can_carry_the_recommendation():
+    """동행 peer 가 없는 계열(call_rate_daily)에서 스프레드가 사각지대를 메운다."""
+    for verdict, expected in (
+        (ProbeVerdict.SUPPORTS_DEFECT, Recommendation.REJECT_LIKELY),
+        (ProbeVerdict.SUPPORTS_REAL, Recommendation.APPROVE_LIKELY),
+    ):
+        result = recommend(
+            [
+                _evidence("peer_corroboration", ProbeVerdict.INSUFFICIENT),
+                _evidence("anchor_spread", verdict),
+            ]
+        )
+        assert result.verdict is expected
+        assert "anchor_spread" in result.because

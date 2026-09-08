@@ -59,16 +59,31 @@ def recommend(evidence: list[Evidence]) -> Recommended:
                 "파이프라인 결함이므로 승인 대상이 아니다.",
             )
 
-    peer = _verdict_of(evidence, "peer_corroboration")
-    if peer is ProbeVerdict.SUPPORTS_DEFECT:
+    # 두 근거는 서로 다른 질문에 답한다. 동행률은 "앵커가 함께 움직였나",
+    # 스프레드는 "수준 관계가 유지됐나"다. 앵커가 거의 움직이지 않는 계열에서는
+    # 전자가 성립하지 않으므로 후자가 사각지대를 메운다.
+    directional = {
+        probe: _verdict_of(evidence, probe) for probe in ("peer_corroboration", "anchor_spread")
+    }
+    defect = [p for p, v in directional.items() if v is ProbeVerdict.SUPPORTS_DEFECT]
+    real = [p for p, v in directional.items() if v is ProbeVerdict.SUPPORTS_REAL]
+
+    if defect and real:
+        # 한쪽을 임의로 고르지 않는다. 근거가 갈린다는 사실 자체가 정보다.
+        return Recommended(
+            Recommendation.INSUFFICIENT_EVIDENCE,
+            f"근거가 갈린다 — {', '.join(defect)}는 결함을, {', '.join(real)}는 "
+            "실제 변동을 가리킨다. 한쪽을 임의로 채택하지 않는다. 승인자가 판단해야 한다.",
+        )
+    if defect:
         return Recommended(
             Recommendation.REJECT_LIKELY,
-            "peer_corroboration: 연동된 계열이 함께 움직이지 않았다. 이 계열만 튀었다.",
+            f"{', '.join(defect)}: 연동된 계열과의 관계가 유지되지 않았다. 이 계열만 튀었다.",
         )
-    if peer is ProbeVerdict.SUPPORTS_REAL:
+    if real:
         return Recommended(
             Recommendation.APPROVE_LIKELY,
-            "peer_corroboration: 연동된 계열이 같은 방향으로 함께 움직였다. 실제 변동으로 보인다.",
+            f"{', '.join(real)}: 연동된 계열과의 관계가 유지됐다. 실제 변동으로 보인다.",
         )
 
     return Recommended(

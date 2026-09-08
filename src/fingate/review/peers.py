@@ -31,6 +31,7 @@
 +0.106이었다. 그 사이는 비어 있다.
 """
 
+import datetime as dt
 from dataclasses import dataclass
 
 from ..warehouse.store import Warehouse
@@ -105,6 +106,8 @@ paired AS (
     WHERE subject.series_id = ?
       AND subject.change IS NOT NULL
       AND peer.change IS NOT NULL
+      -- 변화량은 전 구간에서 계산하고(lag 이 어긋나면 안 된다) 집계에서만 제외한다.
+      AND (CAST(? AS DATE) IS NULL OR subject.period <> CAST(? AS DATE))
 )
 SELECT
     peer_id,
@@ -132,14 +135,29 @@ def _finite(value: object) -> float | None:
     return None if number != number else number
 
 
-def peers_for(warehouse: Warehouse, series_id: str) -> list[PeerLink]:
+def peers_for(
+    warehouse: Warehouse, series_id: str, *, exclude_period: dt.date | None = None
+) -> list[PeerLink]:
     """이 계열이 움직였을 때 함께 움직이는 것으로 측정된 계열만 돌려준다.
 
     자격 미달인 쌍은 아예 제외한다. 약한 근거를 약하다고 표시해 함께 보여주면
     승인자가 그것을 근거로 쓰게 된다. 근거가 없는 편이 나쁜 근거보다 낫다.
+
+    `exclude_period` 는 판정 대상 시점이다. 기준선 통계에 의심 관측이 들어가면
+    자기가 비교당할 기준을 자신이 넓히게 된다. 실측 기준금리 변동은 7회뿐이라
+    한 건이 동행률에 미치는 영향이 작지 않다.
     """
     rows = warehouse.query(
-        _PEER_SQL, (series_id, MOVE_EPSILON, MOVE_EPSILON, MOVE_EPSILON, MOVE_EPSILON)
+        _PEER_SQL,
+        (
+            series_id,
+            exclude_period,
+            exclude_period,
+            MOVE_EPSILON,
+            MOVE_EPSILON,
+            MOVE_EPSILON,
+            MOVE_EPSILON,
+        ),
     )
 
     links: list[PeerLink] = []
