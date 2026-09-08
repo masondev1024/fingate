@@ -27,6 +27,7 @@ from ..gate.ledger import ExceptionLedger, ExceptionStatus
 from ..serve.snapshot import ServingStore
 from ..warehouse.indicators import resolve_indicators
 from ..warehouse.store import Warehouse
+from .anchors import anchors_for
 from .peers import MOVE_EPSILON, peers_for
 
 
@@ -82,7 +83,7 @@ def peer_corroboration(warehouse: Warehouse, series_id: str, period: dt.date) ->
     것과 결함의 증거가 있는 것은 전혀 다르고, 이를 섞으면 정상 데이터를
     결함으로 몰게 된다.
     """
-    links = peers_for(warehouse, series_id)
+    links = peers_for(warehouse, series_id, exclude_period=period)
     subject_change = _change_at(warehouse, series_id, period)
 
     if subject_change is None:
@@ -478,3 +479,83 @@ def financial_precedent(warehouse: Warehouse, corp_code: str) -> Evidence:
     else:
         summary = f"적재된 분기 {quarters}개, 관측된 총자산 최대 분기 변동 {peak:+.1%}."
     return Evidence("financial_precedent", ProbeVerdict.CONTEXT, summary, facts)
+
+
+def anchor_spread(warehouse: Warehouse, spec: SeriesSpec, period: dt.date) -> Evidence:
+    """대상이 앵커의 수준에서 얼마나 벗어났는가.
+
+    `peer_corroboration` 은 앵커가 **움직인 날**을 조건으로 하므로, 거의 움직이지
+    않는 계열은 근거가 되지 못한다. 실측에서 기준금리는 899일 중 892일 평평했고,
+    그래서 `call_rate_daily` 에는 자격 peer 가 하나도 없었다.
+
+    스프레드는 관계가 **유지되기만** 하면 된다. 앵커가 따라 움직여 스프레드가
+    보전되면 실제 변동이고, 대상만 튀어 관계가 깨지면 그 계열의 결함이다.
+
+    경보 임계는 쌍마다 관측된 꼬리에서 유도한다. 교과서 3σ 를 쓰면 실측 콜금리
+    스프레드에서 정상 데이터 900일 중 11일을 오탐한다.
+    """
+    links = anchors_for(warehouse, spec.series_id, spec.max_jump, exclude_period=period)
+    if not links:
+        return Evidence(
+            "anchor_spread",
+            ProbeVerdict.INSUFFICIENT,
+            f"{spec.series_id}의 수준을 규정하는 것으로 측정된 앵커가 없다.",
+            {"anchors": []},
+        )
+
+    observed: list[dict[str, object]] = []
+    for link in links:
+        rows = warehouse.query(
+            """
+            SELECT subject.value - anchor.value AS spread
+            FROM bronze_rate_observation AS subject
+            JOIN bronze_rate_observation AS anchor ON anchor.period = subject.period
+            WHERE subject.series_id = ? AND anchor.series_id = ? AND subject.period = ?
+            """,
+            (spec.series_id, link.anchor_id, period),
+        )
+        spread = float(rows[0]["spread"]) if rows else None
+        z = None if spread is None else abs(spread - link.spread_mean) / link.spread_sd
+        observed.append(
+            {
+                "anchor_id": link.anchor_id,
+                "spread": spread,
+                "spread_mean": link.spread_mean,
+                "spread_sd": link.spread_sd,
+                "z": z,
+                "alert_z": link.alert_z,
+                "observed_max_z": link.observed_max_z,
+                "overlap": link.overlap,
+                "broken": z is not None and z > link.alert_z,
+            }
+        )
+
+    facts = {"anchors": observed}
+    measured = [entry for entry in observed if entry["z"] is not None]
+    broken = [entry for entry in measured if entry["broken"]]
+
+    if not measured:
+        return Evidence(
+            "anchor_spread",
+            ProbeVerdict.INSUFFICIENT,
+            f"앵커는 있으나 {period} 관측이 없어 스프레드를 계산할 수 없다.",
+            facts,
+        )
+    if broken:
+        worst = max(broken, key=lambda entry: float(entry["z"]))
+        return Evidence(
+            "anchor_spread",
+            ProbeVerdict.SUPPORTS_DEFECT,
+            f"{worst['anchor_id']}와의 스프레드가 {float(worst['z']):.1f}σ 벗어났다"
+            f"(경보 {float(worst['alert_z']):.1f}σ, 정상 최대 "
+            f"{float(worst['observed_max_z']):.1f}σ). 수준 관계가 깨졌다.",
+            facts,
+        )
+    closest = max(measured, key=lambda entry: float(entry["z"]))
+    return Evidence(
+        "anchor_spread",
+        ProbeVerdict.SUPPORTS_REAL,
+        f"{closest['anchor_id']}와의 스프레드가 {float(closest['z']):.1f}σ로 유지됐다"
+        f"(경보 {float(closest['alert_z']):.1f}σ). 앵커가 함께 움직였다.",
+        facts,
+    )

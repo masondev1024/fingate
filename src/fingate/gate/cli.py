@@ -82,6 +82,12 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("audit", help="사람의 결정이 에이전트 권고와 얼마나 일치했나")
 
+    revoke = subparsers.add_parser("revoke", help="이미 내린 결정을 철회")
+    revoke.add_argument("exception_id")
+    revoke.add_argument("--by", required=True, help="철회 주체")
+    revoke.add_argument("--note", required=True, help="사유 (필수)")
+    revoke.add_argument("--now", default=None, help="ISO8601, 테스트용")
+
     for name, help_text in (("approve", "승인"), ("reject", "반려")):
         decide = subparsers.add_parser(name, help=help_text)
         decide.add_argument("exception_id")
@@ -96,11 +102,17 @@ def main(argv: list[str] | None = None) -> int:
         report = concurrence(ledger)
         if report.rate is None:
             print("권고와 함께 결정된 건이 없다. 일치도를 계산할 수 없다.")
+            withdrawn = ledger.list(status=ExceptionStatus.REVOKED)
+            if withdrawn:
+                print(f"철회된 결정           : {len(withdrawn)}")
             return 0
         print(f"권고와 함께 결정된 건 : {report.decided_with_recommendation}")
         print(f"권고와 일치           : {report.agreed}")
         print(f"권고와 불일치         : {report.disagreed}")
         print(f"일치율                : {report.rate:.3f}")
+        withdrawn = ledger.list(status=ExceptionStatus.REVOKED)
+        if withdrawn:
+            print(f"철회된 결정           : {len(withdrawn)}")
         if report.rubber_stamp_risk:
             print()
             print(
@@ -139,6 +151,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         now = _parse_now(args.now)
+        if args.command == "revoke":
+            result = ledger.revoke(
+                args.exception_id, decided_by=args.by, note=args.note, now=_parse_now(args.now)
+            )
+            print(f"{result.status}: {result.exception_id} by {result.revoked_by}")
+            print(f"  원래 결정은 기록에 남는다: {result.decided_by} — {result.decision_note}")
+            print("  이미 승격된 last-known-good 스냅샷은 되돌리지 않는다.")
+            return 0
+
         decide = ledger.approve if args.command == "approve" else ledger.reject
         result = decide(
             args.exception_id,

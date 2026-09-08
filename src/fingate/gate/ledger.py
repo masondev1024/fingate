@@ -32,6 +32,8 @@ class ExceptionStatus(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     EXPIRED = "expired"
+    # 이미 내려진 결정을 사람이 되돌린 상태. 결정 자체는 기록에 남는다.
+    REVOKED = "revoked"
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,10 @@ class StagedException:
     decided_at: dt.datetime | None = None
     # 결정 시점에 승인자가 본 에이전트 권고. 빈 문자열이면 권고 없이 결정했다.
     saw_recommendation: str = ""
+    # 철회 기록. 원래 결정(decided_by/decision_note/decided_at)은 지우지 않는다.
+    revoked_by: str = ""
+    revocation_note: str = ""
+    revoked_at: dt.datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.findings:
@@ -106,6 +112,13 @@ class ExceptionLedger:
                 decision_note=entry.get("note", ""),
                 decided_at=dt.datetime.fromisoformat(decided_at) if decided_at else None,
                 saw_recommendation=entry.get("saw_recommendation", ""),
+                revoked_by=entry.get("revoked_by", ""),
+                revocation_note=entry.get("revocation_note", ""),
+                revoked_at=(
+                    dt.datetime.fromisoformat(entry["revoked_at"])
+                    if entry.get("revoked_at")
+                    else None
+                ),
             )
 
     def _audit(self, action: str, staged: StagedException) -> None:
@@ -121,6 +134,9 @@ class ExceptionLedger:
             "note": staged.decision_note,
             "decided_at": staged.decided_at.isoformat() if staged.decided_at else None,
             "saw_recommendation": staged.saw_recommendation,
+            "revoked_by": staged.revoked_by,
+            "revocation_note": staged.revocation_note,
+            "revoked_at": staged.revoked_at.isoformat() if staged.revoked_at else None,
             "findings": [
                 {
                     "rule": finding.rule,
@@ -222,6 +238,44 @@ class ExceptionLedger:
         return self._decide(
             exception_id, ExceptionStatus.REJECTED, decided_by, note, now, recommendation
         )
+
+    def revoke(
+        self, exception_id: str, decided_by: str, note: str, now: dt.datetime
+    ) -> StagedException:
+        """이미 내려진 결정을 되돌린다.
+
+        승인은 last-known-good 스냅샷으로 승격되므로, 잘못된 승인은 기준선에
+        남는다. 설계는 이를 "되돌리려면 사람이 개입해야 한다"로 규정했지만
+        정작 개입할 경로가 없었다. 이 연산이 그 경로다.
+
+        **철회는 기록을 지우지 않는다.** 누가 무슨 사유로 승인했었는지가 남아야
+        감사가 성립한다. 철회는 그 위에 덧붙는 사실이다.
+
+        철회가 하는 일은 하나다 — 이 예외가 더 이상 시계열을 통과시키지 못하게
+        한다. 이미 승격된 스냅샷을 되돌리지는 않는다. 그것까지 자동으로 하면
+        "승인은 사람의 판단"이라는 전제가 깨진다.
+        """
+        staged = self.get(exception_id)
+        if staged.status not in (ExceptionStatus.APPROVED, ExceptionStatus.REJECTED):
+            raise ValueError(
+                f"exception {exception_id} is {staged.status} and cannot be revoked; "
+                "only a decided exception can be"
+            )
+        if not decided_by.strip():
+            raise ValueError("decided_by must not be empty")
+        if not note.strip():
+            raise ValueError("note must not be empty")
+
+        revoked = dataclasses.replace(
+            staged,
+            status=ExceptionStatus.REVOKED,
+            revoked_by=decided_by,
+            revocation_note=note,
+            revoked_at=now,
+        )
+        self._entries[exception_id] = revoked
+        self._audit("revoked", revoked)
+        return revoked
 
     def is_cleared(self, series_id: str, now: dt.datetime) -> bool:
         """이 시계열에 대해 유효한 승인이 있는지.
