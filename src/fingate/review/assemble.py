@@ -19,6 +19,7 @@ from ..warehouse.store import Warehouse
 from .probes import (
     Evidence,
     ProbeVerdict,
+    anchor_spread,
     blast_radius,
     corp_code_of,
     financial_precedent,
@@ -83,6 +84,14 @@ def review_exception(
         )
         evidence.append(
             Evidence(
+                "anchor_spread",
+                ProbeVerdict.INSUFFICIENT,
+                "위반에 시점이 없어 스프레드를 계산할 관측을 특정할 수 없다.",
+                {"anchors": []},
+            )
+        )
+        evidence.append(
+            Evidence(
                 "raw_provenance",
                 ProbeVerdict.INSUFFICIENT,
                 "위반에 시점이 없어 원본과 대조할 행을 특정할 수 없다.",
@@ -91,6 +100,7 @@ def review_exception(
         )
     else:
         evidence.append(peer_corroboration(warehouse, staged.series_id, suspect))
+        evidence.append(anchor_spread(warehouse, spec, suspect))
         value = _stored_value(warehouse, staged.series_id, suspect)
         if value is None:
             evidence.append(
@@ -139,7 +149,13 @@ def _review_financial(
             ProbeVerdict.INSUFFICIENT,
             "연동 계열 대조는 금리 계열에만 적용된다. 재무 지표에는 해당 개념이 없다.",
             {"subject_change": None, "peers": []},
-        )
+        ),
+        Evidence(
+            "anchor_spread",
+            ProbeVerdict.INSUFFICIENT,
+            "수준 스프레드 대조는 금리 계열에만 적용된다. 재무 지표에는 앵커가 없다.",
+            {"anchors": []},
+        ),
     ]
 
     if suspect is None:

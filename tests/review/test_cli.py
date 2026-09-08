@@ -117,7 +117,7 @@ def test_review_emits_machine_readable_output(bench, capsys):
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["recommendation"]["verdict"] == "approve_likely"
-    assert len(payload["evidence"]) == 5
+    assert len(payload["evidence"]) == 6
     assert payload["exception_id"] == bench["id"]
 
 

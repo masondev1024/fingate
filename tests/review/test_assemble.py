@@ -96,6 +96,7 @@ def test_a_corroborated_jump_is_recommended_for_approval(bench):
     assert review.recommendation.verdict is Recommendation.APPROVE_LIKELY
     assert {item.probe for item in review.evidence} == {
         "peer_corroboration",
+        "anchor_spread",
         "raw_provenance",
         "historical_precedent",
         "blast_radius",
