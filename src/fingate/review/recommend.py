@@ -49,12 +49,15 @@ def recommend(evidence: list[Evidence]) -> Recommended:
     1이 2·3보다 위에 있는 것이 핵심이다. 뒤집히면 peer가 강하게 동행하는
     상황에서 우리 파이프라인이 만들어낸 값이 통과한다.
     """
-    if _verdict_of(evidence, "raw_provenance") is ProbeVerdict.SUPPORTS_DEFECT:
-        return Recommended(
-            Recommendation.REJECT,
-            "raw_provenance: 적재된 값이 원본 응답과 다르다. 출처 문제가 아니라 "
-            "파이프라인 결함이므로 승인 대상이 아니다.",
-        )
+    # 소스마다 원본 대조 probe 이름이 다르다. 둘 중 무엇이든 원본 불일치면
+    # 같은 결론이다 — 우리가 만든 결함은 승인 대상이 아니다.
+    for probe in ("raw_provenance", "financial_provenance"):
+        if _verdict_of(evidence, probe) is ProbeVerdict.SUPPORTS_DEFECT:
+            return Recommended(
+                Recommendation.REJECT,
+                f"{probe}: 적재된 값이 원본 응답과 다르다. 출처 문제가 아니라 "
+                "파이프라인 결함이므로 승인 대상이 아니다.",
+            )
 
     peer = _verdict_of(evidence, "peer_corroboration")
     if peer is ProbeVerdict.SUPPORTS_DEFECT:
