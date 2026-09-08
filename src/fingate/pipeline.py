@@ -16,10 +16,13 @@ from .collect.dart import DartCollector, ReportCode
 from .collect.ecos import ContractViolation, EcosCollector, EcosRequest
 from .collect.raw_store import RawStore
 from .collect.series import SERIES
+from .contracts.financial_quality import check_financial_quality, financial_series_id
 from .contracts.quality import check_quality
 from .contracts.schema import normalize_ecos_rows
 from .gate.ledger import ExceptionLedger
 from .serve.snapshot import ServingStore, decide_serving
+from .warehouse.indicators import resolve_indicators
+from .warehouse.periods import quarter_of
 from .warehouse.store import Warehouse
 
 # 보험 5사. 수익 구조가 금리에 직결되어 두 소스의 조인이 의미를 갖는다.
@@ -40,6 +43,7 @@ class RunSummary:
     financial_rows: int = 0
     unmapped_rows: int = 0
     blocked_requests: int = 0
+    blocked_financials: int = 0
     staged_exceptions: int = 0
     serving_states: dict[str, str] = field(default_factory=dict)
 
@@ -126,6 +130,32 @@ def run(
                 except ContractViolation:
                     summary.blocked_requests += 1
                     continue
+
+                # 재무도 금리와 같은 규율을 받는다. 서빙 테이블을 구동하는 쪽이
+                # 이쪽이므로, 여기가 열려 있으면 게이트 전체가 반쪽이다.
+                series_id = financial_series_id(corp_code)
+                resolved, _ = resolve_indicators(report_code.value, financials.rows)
+                report = check_financial_quality(
+                    corp_code,
+                    year,
+                    report_code.value,
+                    resolved,
+                    previous_total_assets=warehouse.previous_total_assets(
+                        corp_code, year, quarter_of(report_code.value)
+                    ),
+                )
+
+                if not report.ok and not ledger.is_cleared(series_id, now):
+                    ledger.stage(
+                        series_id, report.findings, financials.raw.request_id, now, EXCEPTION_TTL
+                    )
+                    summary.staged_exceptions += 1
+                    summary.blocked_financials += 1
+                    summary.serving_states[
+                        f"{series_id} {year}Q{quarter_of(report_code.value)}"
+                    ] = "blocked:quality"
+                    continue
+
                 loaded = warehouse.load_financials(
                     corp_code=corp_code,
                     corp_name=corp_name,
@@ -164,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"재무지표 적재  {summary.financial_rows:>7,}행")
     print(f"미매핑 기록    {summary.unmapped_rows:>7,}건")
     print(f"계약 차단      {summary.blocked_requests:>7,}건")
+    print(f"재무 품질 차단 {summary.blocked_financials:>7,}건")
     print(f"승인 대기 생성 {summary.staged_exceptions:>7,}건")
     print("서빙 상태:")
     for series_id, state in sorted(summary.serving_states.items()):

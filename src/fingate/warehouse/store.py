@@ -16,8 +16,8 @@ from typing import Any
 import duckdb
 
 from ..contracts.schema import Observation
-from .indicators import map_account
-from .periods import quarter_of, resolve_amount
+from .indicators import resolve_indicators
+from .periods import quarter_of
 
 SCHEMA_DDL = (
     """
@@ -43,6 +43,8 @@ SCHEMA_DDL = (
         account_nm   VARCHAR NOT NULL,
         amount       HUGEINT NOT NULL,
         period_kind  VARCHAR NOT NULL,
+        -- 연결(CFS)인지 별도(OFS)인지. 기록하지 않으면 어느 기준인지 알 수 없다.
+        fs_div       VARCHAR NOT NULL,
         cumulative_amount HUGEINT,
         request_id   VARCHAR NOT NULL,
         loaded_at    TIMESTAMPTZ NOT NULL,
@@ -250,19 +252,14 @@ class Warehouse:
         loaded_at: dt.datetime,
     ) -> LoadResult:
         result = LoadResult()
-        for row in rows:
-            statement = str(row.get("sj_div", ""))
-            account_name = str(row.get("account_nm", "")).strip()
-            indicator = map_account(statement, account_name)
-            amount, period_kind, cumulative = resolve_amount(
-                statement, report_code, row.get("thstrm_amount"), row.get("thstrm_add_amount")
-            )
+        resolved, unmapped = resolve_indicators(report_code, rows)
 
-            if indicator is None or amount is None:
-                reason = "UNMAPPED_ACCOUNT" if indicator is None else "AMOUNT_NOT_NUMERIC"
-                result.unmapped.append(f"{statement}/{account_name}")
-                self._connection.execute(
-                    """
+        for missing in unmapped:
+            statement, account_name = missing.statement, missing.account_nm
+            reason = missing.reason
+            result.unmapped.append(f"{statement}/{account_name}")
+            self._connection.execute(
+                """
                     INSERT INTO bronze_unmapped_account
                         (corp_code, bsns_year, report_code, statement, account_nm,
                          reason, request_id, loaded_at)
@@ -273,31 +270,32 @@ class Warehouse:
                         request_id = excluded.request_id,
                         loaded_at = excluded.loaded_at
                     """,
-                    (
-                        corp_code,
-                        bsns_year,
-                        report_code,
-                        statement,
-                        account_name,
-                        reason,
-                        request_id,
-                        loaded_at,
-                    ),
-                )
-                continue
+                (
+                    corp_code,
+                    bsns_year,
+                    report_code,
+                    statement,
+                    account_name,
+                    reason,
+                    request_id,
+                    loaded_at,
+                ),
+            )
 
+        for item in resolved:
             self._connection.execute(
                 """
                 INSERT INTO bronze_financial_indicator
                     (corp_code, corp_name, bsns_year, report_code, quarter, indicator_id,
-                     statement, account_nm, amount, period_kind, cumulative_amount,
+                     statement, account_nm, amount, period_kind, fs_div, cumulative_amount,
                      request_id, loaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (corp_code, bsns_year, report_code, indicator_id) DO UPDATE SET
                     corp_name = excluded.corp_name,
                     account_nm = excluded.account_nm,
                     amount = excluded.amount,
                     period_kind = excluded.period_kind,
+                    fs_div = excluded.fs_div,
                     cumulative_amount = excluded.cumulative_amount,
                     request_id = excluded.request_id,
                     loaded_at = excluded.loaded_at
@@ -308,18 +306,37 @@ class Warehouse:
                     bsns_year,
                     report_code,
                     quarter_of(report_code),
-                    indicator.indicator_id,
-                    str(indicator.statement),
-                    account_name,
-                    amount,
-                    str(period_kind),
-                    cumulative,
+                    item.indicator_id,
+                    item.statement,
+                    item.account_nm,
+                    item.amount,
+                    item.period_kind,
+                    item.fs_div,
+                    item.cumulative_amount,
                     request_id,
                     loaded_at,
                 ),
             )
             result.inserted += 1
         return result
+
+    def previous_total_assets(self, corp_code: str, bsns_year: int, quarter: int) -> int | None:
+        """직전 분기의 총자산. 급변 판정의 비교 기준이다.
+
+        직전 분기가 없으면 None이다. 비교할 대상이 없는 것을 0으로 두면
+        첫 분기가 항상 무한대 변동으로 걸린다.
+        """
+        rows = self.query(
+            """
+            SELECT amount FROM bronze_financial_indicator
+            WHERE corp_code = ? AND indicator_id = 'total_assets'
+              AND (bsns_year * 10 + quarter) < ?
+            ORDER BY (bsns_year * 10 + quarter) DESC
+            LIMIT 1
+            """,
+            (corp_code, bsns_year * 10 + quarter),
+        )
+        return int(rows[0]["amount"]) if rows else None
 
     def quarterly_rates(self) -> list[dict[str, Any]]:
         """일별·월별 금리를 분기 평균으로 집계한다.
