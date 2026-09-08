@@ -259,6 +259,7 @@ MIT
 
 ## 문서
 
+- [엔지니어링 기록](docs/engineering-log.md) — 무엇이 깨졌고 왜 그렇게 정했나
 - [설계](docs/specs/2026-09-07-fingate-design.md)
 - [승인 보조 설계](docs/specs/2026-09-08-approval-reviewer.md)
 - [재무 데이터 계약](docs/specs/2026-09-08-financial-contract.md)
