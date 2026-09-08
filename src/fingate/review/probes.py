@@ -16,12 +16,25 @@ from enum import StrEnum
 
 from ..collect.raw_store import RawStore
 from ..collect.series import SeriesSpec
+from ..contracts.financial_quality import (
+    DART_PREFIX,
+    check_financial_quality,
+    financial_series_id,
+)
 from ..contracts.quality import QualityFinding
 from ..contracts.schema import parse_period
 from ..gate.ledger import ExceptionLedger, ExceptionStatus
 from ..serve.snapshot import ServingStore
+from ..warehouse.indicators import resolve_indicators
 from ..warehouse.store import Warehouse
 from .peers import MOVE_EPSILON, peers_for
+
+
+def corp_code_of(series_id: str) -> str | None:
+    """DART 계열 식별자에서 회사 코드를 꺼낸다. 금리 계열이면 None."""
+    prefix = f"{DART_PREFIX}:"
+    return series_id[len(prefix) :] if series_id.startswith(prefix) else None
+
 
 # 서빙 뷰가 직접 소비하는 계열. 나머지는 막혀도 이 제품에 도달하지 않는다.
 SERVING_RATE_COLUMNS = {
@@ -260,9 +273,18 @@ def blast_radius(
     승인의 위험만 보고 결정할 수 없다. 마지막 정상값이 90일 전이라면 degraded
     유지도 안전한 선택이 아니다. 반려의 비용을 함께 놓아야 판단이 성립한다.
     """
+    corp_code = corp_code_of(series_id)
     column = SERVING_RATE_COLUMNS.get(series_id)
     affected = 0
-    if column is not None:
+    if corp_code is not None:
+        # 재무는 서빙 뷰의 구동 테이블이다. 막으면 그 회사 행 자체가 사라진다.
+        rows = warehouse.query(
+            "SELECT count(*) AS n FROM serving_insurer_rate_context WHERE corp_code = ?",
+            (corp_code,),
+        )
+        affected = int(rows[0]["n"])
+    elif column is not None:
+        # 금리는 LEFT JOIN 되는 맥락이다. 막아도 행은 남고 열이 빈다.
         rows = warehouse.query(
             f"SELECT count(*) AS n FROM serving_insurer_rate_context WHERE {column} IS NOT NULL"  # noqa: S608
         )
@@ -328,3 +350,131 @@ def prior_decisions(ledger: ExceptionLedger, series_id: str, rules: tuple[str, .
             f"가장 최근: {latest.status} by {latest.decided_by} — {latest.decision_note}"
         )
     return Evidence("prior_decisions", ProbeVerdict.CONTEXT, summary, facts)
+
+
+def financial_provenance(
+    raw_store: RawStore,
+    corp_code: str,
+    bsns_year: int,
+    report_code: str,
+    findings: list[QualityFinding],
+    request_id: str,
+    *,
+    previous_total_assets: int | None = None,
+) -> Evidence:
+    """보존된 원본을 다시 해석해 같은 위반이 재현되는지 본다.
+
+    금리는 값 하나를 대조하면 되지만, 재무의 위반은 항등식·부호·결측이라
+    단일 값 비교로는 답이 나오지 않는다. 대신 원본에서 지표를 다시 해석하고
+    같은 계약을 다시 적용한다. 질문은 동일하다 — 이 위반이 출처의 것인가,
+    우리가 만든 것인가.
+
+    - 재현된다: 출처가 그렇게 보냈다. 판단 대상은 "이 수치가 현실인가"다.
+    - 재현되지 않는다: 원본은 정합한데 우리 쪽만 깨졌다. 승인 대상이 아니라 버그다.
+    """
+    series_id = financial_series_id(corp_code)
+    observed = sorted({finding.rule for finding in findings})
+
+    try:
+        body = raw_store.get_body(request_id)
+    except KeyError:
+        return Evidence(
+            "financial_provenance",
+            ProbeVerdict.INSUFFICIENT,
+            f"원본 응답 {request_id}를 찾을 수 없어 대조할 수 없다.",
+            {"request_id": request_id, "raw_rules": None, "observed_rules": observed},
+        )
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        rows = payload["list"]
+        if not isinstance(rows, list):
+            raise TypeError
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        return Evidence(
+            "financial_provenance",
+            ProbeVerdict.INSUFFICIENT,
+            "원본 응답이 예상한 DART 구조가 아니어서 대조할 수 없다.",
+            {"request_id": request_id, "raw_rules": None, "observed_rules": observed},
+        )
+
+    resolved, unmapped = resolve_indicators(report_code, rows)
+    replayed = check_financial_quality(
+        corp_code,
+        bsns_year,
+        report_code,
+        resolved,
+        previous_total_assets=previous_total_assets,
+    )
+    raw_rules = sorted({finding.rule for finding in replayed.findings})
+
+    facts = {
+        "request_id": request_id,
+        "series_id": series_id,
+        "raw_rules": raw_rules,
+        "observed_rules": observed,
+        "raw_indicators": len(resolved),
+        "raw_unmapped": len(unmapped),
+    }
+
+    reproduced = [rule for rule in observed if rule in raw_rules]
+    if reproduced:
+        return Evidence(
+            "financial_provenance",
+            ProbeVerdict.CONTEXT,
+            f"원본을 다시 해석해도 {', '.join(reproduced)}가 재현된다. 출처가 보낸 값이다.",
+            facts,
+        )
+    if not raw_rules:
+        return Evidence(
+            "financial_provenance",
+            ProbeVerdict.SUPPORTS_DEFECT,
+            "원본은 계약을 통과한다. 적재 과정에서 위반이 생겼다.",
+            facts,
+        )
+    return Evidence(
+        "financial_provenance",
+        ProbeVerdict.SUPPORTS_DEFECT,
+        f"원본에서는 {', '.join(raw_rules)}가 나오고 기록된 위반과 다르다. "
+        "적재 과정이 위반의 내용을 바꿨다.",
+        facts,
+    )
+
+
+def financial_precedent(warehouse: Warehouse, corp_code: str) -> Evidence:
+    """이 회사의 적재 이력. 총자산이 실제로 얼마나 움직여 왔는가.
+
+    금리의 historical_precedent와 같은 역할이되 대상 테이블이 다르다.
+    금리 테이블을 조회하면 재무 위반에 대해 항상 "전례 없음"이 나온다.
+    """
+    rows = warehouse.query(
+        """
+        SELECT count(*) AS quarters,
+               max(abs(change)) AS max_change
+        FROM (
+            SELECT amount,
+                   (amount - lag(amount) OVER (ORDER BY bsns_year * 10 + quarter))
+                   / CAST(lag(amount) OVER (ORDER BY bsns_year * 10 + quarter) AS DOUBLE)
+                       AS change
+            FROM bronze_financial_indicator
+            WHERE corp_code = ? AND indicator_id = 'total_assets'
+        )
+        """,
+        (corp_code,),
+    )
+    quarters = int(rows[0]["quarters"]) if rows else 0
+    peak = rows[0]["max_change"] if rows else None
+    peak = float(peak) if peak is not None else None
+
+    facts = {
+        "corp_code": corp_code,
+        "loaded_quarters": quarters,
+        "max_asset_change": peak,
+    }
+    if quarters == 0:
+        summary = "이 회사의 적재 이력이 없다. 비교할 전례가 없다."
+    elif peak is None:
+        summary = f"적재된 분기 {quarters}개. 변화를 계산할 직전 분기가 없다."
+    else:
+        summary = f"적재된 분기 {quarters}개, 관측된 총자산 최대 분기 변동 {peak:+.1%}."
+    return Evidence("financial_precedent", ProbeVerdict.CONTEXT, summary, facts)
