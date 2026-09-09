@@ -221,3 +221,201 @@ def test_a_number_in_prose_is_still_checked_even_next_to_a_list():
 
     assert not report.ok
     assert "4.25" in report.ungrounded
+
+
+# --- 실모델 답변 6건에서 드러난 날짜 표기 (2026-09-09) -----------------------
+
+
+def test_a_korean_date_is_matched_as_a_date():
+    """모델은 ISO 가 아니라 "2026년 9월 5일" 로 쓴다.
+
+    쪼개면 연도와 월은 우연히 통과하고 일자만 잡힌다. 실측 6건이 전부 이 형태였다.
+    """
+    report = check_grounding(
+        "2026년 9월 5일 자 데이터가 문제다.",
+        tool_results=_facts(period="2026-09-05"),
+        prompt_text="",
+    )
+
+    assert report.ok, f"한국어 날짜가 쪼개져 잡혔다: {report.ungrounded}"
+
+
+def test_a_korean_date_the_tools_never_returned_is_flagged():
+    report = check_grounding(
+        "2030년 1월 1일에 발생했다.", tool_results=_facts(period="2026-09-05"), prompt_text=""
+    )
+
+    assert not report.ok
+
+
+def test_a_korean_year_month_is_matched():
+    report = check_grounding(
+        "2024년 12월 기준이다.", tool_results=_facts(period="2024-12-31"), prompt_text=""
+    )
+
+    assert report.ok
+
+
+def test_a_korean_month_day_without_a_year_is_matched():
+    report = check_grounding(
+        "9월 5일 관측이다.", tool_results=_facts(period="2026-09-05"), prompt_text=""
+    )
+
+    assert report.ok
+
+
+def test_a_month_day_that_no_date_has_is_flagged():
+    report = check_grounding(
+        "3월 14일 관측이다.", tool_results=_facts(period="2026-09-05"), prompt_text=""
+    )
+
+    assert not report.ok
+
+
+def test_a_dotted_date_is_matched():
+    """DART 는 기간을 2024.01.01 형태로 표기한다. 모델이 그대로 옮길 수 있다."""
+    report = check_grounding(
+        "2024.12.31 기준이다.", tool_results=_facts(period="2024-12-31"), prompt_text=""
+    )
+
+    assert report.ok
+
+
+def test_a_date_does_not_ground_unrelated_numbers():
+    """날짜를 인정한다고 그 안의 숫자가 다른 자리에서까지 근거가 되면 안 된다."""
+    report = check_grounding(
+        "2026년 9월 5일이고 금리는 5다.",
+        tool_results=_facts(period="2026-09-05"),
+        prompt_text="",
+    )
+
+    assert not report.ok
+    assert "5" in report.ungrounded
+
+
+# --- 식별자 (2026-09-09 실측: 모델이 exception_id 를 인용한다) ----------------
+
+
+UID = "c4e54b3d-550c-4a9b-b8a3-f2b3cfa88eff"
+
+
+def test_a_uuid_is_recorded_as_one_token_not_as_digit_fragments():
+    """모델은 차단 건 id 를 그대로 인용한다. 숫자 추출기가 그것을 조각낸다.
+
+    실측에서 UUID 하나가 9개의 "근거 없는 수치" 로 잡혔다. 하이픈을 음수 부호로
+    읽어 -550 까지 나왔다. 조각이 우연히 맞아 통과하는 것으로는 부족하다 —
+    **식별자 전체가 하나의 토큰으로 처리되어야 한다.**
+    """
+    report = check_grounding(
+        f"차단 건({UID})의 측정 데이터다.", tool_results=_facts(exception_id=UID), prompt_text=""
+    )
+
+    assert report.ok
+    assert UID in report.sources, "식별자가 통째로 대조되지 않았다"
+    assert not any(frag in report.sources for frag in ("54", "-550", "88"))
+
+
+def test_an_identifier_whose_fragments_exist_is_still_flagged_as_a_whole():
+    """조각이 전부 도구 반환값에 있어도 그 식별자 자체가 없으면 잡아야 한다.
+
+    조각 단위로 근거를 인정하면 지어낸 식별자가 통과한다.
+    """
+    report = check_grounding(
+        "차단 건(f2b3cfa88eff-550c-4a9b-b8a3-c4e54b3d)이다.",
+        tool_results=_facts(exception_id=UID),
+        prompt_text="",
+    )
+
+    assert not report.ok
+
+
+def test_a_series_identifier_with_digits_is_matched_whole():
+    """dart:00113058, 722Y001, INFO-100 도 같은 문제를 만든다.
+
+    숫자가 없는 코드(req-demo)는 애초에 쪼개질 것이 없어 보호가 필요 없다.
+    """
+    for code in ("dart:00113058", "722Y001", "INFO-100"):
+        report = check_grounding(
+            f"식별자는 {code}다.", tool_results=_facts(code=code), prompt_text=""
+        )
+        assert report.ok, f"{code} 가 쪼개져 잡혔다: {report.ungrounded}"
+        assert code in report.sources, f"{code} 가 통째로 대조되지 않았다"
+
+
+def test_a_code_without_digits_needs_no_protection():
+    report = check_grounding(
+        "식별자는 req-demo다.", tool_results=_facts(code="req-demo"), prompt_text=""
+    )
+
+    assert report.ok
+
+
+def test_an_identifier_does_not_ground_a_separate_number():
+    """식별자를 인정한다고 그 안의 숫자가 다른 자리에서까지 근거가 되면 안 된다."""
+    report = check_grounding(
+        f"건 {UID} 이고 금리는 550이다.", tool_results=_facts(exception_id=UID), prompt_text=""
+    )
+
+    assert not report.ok
+    assert "550" in report.ungrounded
+
+
+def test_a_date_is_still_a_date_not_an_identifier():
+    """날짜는 글자가 없으므로 식별자 규칙에 먹히면 안 된다."""
+    report = check_grounding(
+        "2026-09-05 관측이다.", tool_results=_facts(period="2026-09-05"), prompt_text=""
+    )
+
+    assert report.ok
+    assert "2026-09-05" in report.sources
+
+
+def test_an_iso_timestamp_is_matched_whole():
+    """도구는 시각을 ISO 로 반환하고 모델은 그대로 옮긴다.
+
+    날짜만 통째로 다루면 뒤의 시·분·초와 마이크로초가 조각난다. 실측에서
+    2026-09-08T00:55:13.508517+00:00 의 508517 이 근거 없음으로 잡혔다.
+    """
+    stamp = "2026-09-08T00:55:13.508517+00:00"
+    report = check_grounding(
+        f"직전 스냅샷({stamp} 기준)으로 서빙된다.",
+        tool_results=_facts(last_good_at=stamp),
+        prompt_text="",
+    )
+
+    assert report.ok, f"타임스탬프가 조각나 잡혔다: {report.ungrounded}"
+    assert stamp in report.sources
+
+
+def test_a_timestamp_the_tools_never_returned_is_flagged():
+    report = check_grounding(
+        "직전 스냅샷(2030-01-01T09:00:00+00:00)이다.",
+        tool_results=_facts(last_good_at="2026-09-08T00:55:13.508517+00:00"),
+        prompt_text="",
+    )
+
+    assert not report.ok
+
+
+def test_a_reformatted_timestamp_is_still_matched():
+    """모델은 표에 넣으려고 T 와 마이크로초·타임존을 떼고 다시 쓴다.
+
+    실측: 도구 2026-09-08T00:55:13.508517+00:00 -> 모델 "2026-09-08 00:55:13".
+    """
+    report = check_grounding(
+        "직전 스냅샷은 2026-09-08 00:55:13 이다.",
+        tool_results=_facts(last_good_at="2026-09-08T00:55:13.508517+00:00"),
+        prompt_text="",
+    )
+
+    assert report.ok, f"재포맷한 시각이 잡혔다: {report.ungrounded}"
+
+
+def test_a_reformat_does_not_let_a_different_time_through():
+    report = check_grounding(
+        "직전 스냅샷은 2026-09-08 09:12:44 이다.",
+        tool_results=_facts(last_good_at="2026-09-08T00:55:13.508517+00:00"),
+        prompt_text="",
+    )
+
+    assert not report.ok
