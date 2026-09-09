@@ -18,14 +18,57 @@ from ..gate.ledger import ExceptionLedger
 from ..review.cli import DEFAULT_AUDIT, add_source_arguments
 from ..serve.snapshot import ServingStore
 from ..warehouse.store import Warehouse
-from .session import MODEL, ask, build_client
+from .session import ask
 from .tools import Toolbox
+
+# 공급자마다 자격 증명 이름이 다르다. 하나만 있으면 된다.
+PROVIDERS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
 
 
 def _parse_now(value: str | None):
     import datetime as dt
 
     return dt.datetime.fromisoformat(value) if value else dt.datetime.now(dt.UTC)
+
+
+def _credential(name: str, env_path: Path) -> str:
+    """환경변수를 우선하고 없으면 .env 를 읽는다. 값은 절대 출력하지 않는다."""
+    if os.environ.get(name):
+        return os.environ[name]
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == name and value.strip():
+                return value.strip()
+    return ""
+
+
+def _resolve_provider(requested: str | None, env_path: Path) -> tuple[str, str]:
+    """어느 공급자로 돌릴지 정한다. 지정이 없으면 있는 키를 쓴다."""
+    if requested:
+        key = _credential(PROVIDERS[requested], env_path)
+        return requested, key
+    for provider, variable in PROVIDERS.items():
+        key = _credential(variable, env_path)
+        if key:
+            return provider, key
+    return "", ""
+
+
+def _client_for(provider: str, key: str, model: str | None):
+    if provider == "gemini":
+        from .gemini import DEFAULT_MODEL, build_client
+
+        return build_client(key, model=model or DEFAULT_MODEL)
+    from .session import build_client
+
+    return build_client(key)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,13 +80,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("question", help="승인자의 질문")
     parser.add_argument("--audit", type=Path, default=DEFAULT_AUDIT)
     add_source_arguments(parser)
-    parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--env", type=Path, default=Path(".env"))
+    parser.add_argument("--provider", choices=sorted(PROVIDERS), default=None)
+    parser.add_argument("--model", default=None, help="공급자의 모델명")
     parser.add_argument("--now", default=None, help="ISO8601, 테스트용")
     args = parser.parse_args(argv)
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    provider, key = _resolve_provider(args.provider, args.env)
+    if not key:
+        wanted = PROVIDERS[args.provider] if args.provider else " 또는 ".join(PROVIDERS.values())
         print(
-            "ANTHROPIC_API_KEY가 없다. 이 명령만 자격 증명을 필요로 한다.\n"
+            f"{wanted}가 없다. 이 명령만 모델 자격 증명을 필요로 한다.\n"
             "근거 조립과 검증은 fingate-review 로 키 없이 확인할 수 있다.",
             file=sys.stderr,
         )
@@ -66,13 +113,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.question,
                 exception_id=args.exception_id,
                 toolbox=toolbox,
-                client=build_client(),
-                model=args.model,
+                client=_client_for(provider, key, args.model),
             )
         except KeyError as error:
             print(str(error).strip("'"), file=sys.stderr)
             return 1
 
+    print(f"공급자: {provider}")
     print(f"질문: {args.question}\n")
     if answer.tool_calls:
         print("읽은 근거")

@@ -126,7 +126,7 @@
 ```bash
 cp .env.example .env    # ECOS·DART 인증키를 채운다
 uv sync --extra dev
-make ci                 # lint + 343 tests
+make ci                 # lint + 355 tests
 
 # 파이프라인 전체 실행 (수집 → 계약 → 게이트 → 서빙 → 적재)
 uv run fingate-run
@@ -198,9 +198,16 @@ probe 다섯 개는 전부 SQL과 파일 대조로 구현된 **결정론적** �
 그 형식과 다를 때, 같은 근거로 답하는 계층이다.
 
 ```bash
-export ANTHROPIC_API_KEY=...          # 이 명령만 자격 증명을 쓴다
+# 이 명령만 모델 자격 증명을 쓴다. .env 에 둘 중 하나를 넣는다.
+#   ANTHROPIC_API_KEY=  또는  GEMINI_API_KEY=
 uv run fingate-ask <id> "이 급변이 진짜인가?"
+uv run fingate-ask <id> "..." --provider gemini
 ```
+
+**공급자를 바꿔도 루프와 검증은 그대로다.** 루프는 클라이언트를 프로토콜로
+주입받고, 어댑터가 응답 모양만 맞춘다. 수집기가 전송 계층을 주입받아 ECOS·DART를
+같은 계약으로 다루는 것과 같은 구조다. 이 분리가 없으면 "환각을 막았다"는 주장이
+특정 모델의 성질에 기대게 된다.
 
 모델은 probe 를 **도구로 호출해** 근거를 읽고 답한다. 근거를 만드는 것은 여전히
 결정론적 probe 다. 모델이 하는 일은 무엇을 읽을지 고르고 질문에 맞게 설명하는 것뿐이다.

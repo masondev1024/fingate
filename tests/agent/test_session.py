@@ -358,3 +358,82 @@ def test_the_tool_result_carries_the_summary_not_only_the_facts(toolbox):
     assert "summary" in outcome and outcome["summary"]
     report = check_grounding(outcome["summary"], tool_results=[outcome], prompt_text="")
     assert report.ok, f"probe 자신의 문장이 근거 없음으로 잡혔다: {report.ungrounded}"
+
+
+# --- 공급자를 바꿔도 같은 루프, 같은 검증 -----------------------------------
+
+
+def test_the_same_loop_runs_through_the_gemini_adapter(toolbox):
+    """어댑터만 바뀌고 루프·도구·검증은 그대로다.
+
+    이 분리가 없으면 "환각을 막았다"는 주장이 특정 모델의 성질에 기대게 된다.
+    """
+    pytest.importorskip("google.genai")
+    from dataclasses import dataclass as dc
+
+    from fingate.agent.gemini import GeminiMessages
+
+    box, exception_id = toolbox
+
+    @dc
+    class Call:
+        name: str
+        args: dict
+        id: str | None = None
+
+    @dc
+    class Part:
+        text: str | None = None
+        function_call: object = None
+        thought: bool = False
+
+    @dc
+    class Cand:
+        content: object
+        finish_reason: str = "STOP"
+
+    @dc
+    class Wrap:
+        parts: list
+
+    class Models:
+        def __init__(self, replies):
+            self.replies = replies
+
+        def generate_content(self, **kwargs):
+            return self.replies.pop(0)
+
+    class Genai:
+        def __init__(self, models):
+            self.models = models
+
+    replies = [
+        type(
+            "R",
+            (),
+            {
+                "candidates": [
+                    Cand(
+                        Wrap(
+                            [
+                                Part(
+                                    function_call=Call(
+                                        "read_evidence",
+                                        {"exception_id": exception_id, "probe": "anchor_spread"},
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                ]
+            },
+        )(),
+        type("R", (), {"candidates": [Cand(Wrap([Part(text="기준금리를 4.25로 올렸다.")]))]})(),
+    ]
+    client = GeminiMessages(Genai(Models(replies)))
+
+    answer = ask("진짜인가?", exception_id=exception_id, toolbox=box, client=client)
+
+    assert answer.tool_calls[0][0] == "read_evidence"
+    assert not answer.released, "공급자가 바뀌어도 지어낸 수치는 막혀야 한다"
+    assert "4.25" in answer.grounding.ungrounded
