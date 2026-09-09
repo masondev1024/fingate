@@ -29,6 +29,19 @@ LLM 버전이다.
 2026·09·04 세 개의 근거를 요구하게 되고, 그중 하나라도 없으면 정상 답변이
 환각으로 몰린다.
 
+**식별자도 통째로 다룬다.** 모델은 차단 건 id 를 그대로 인용한다. 숫자 추출기가
+`c4e54b3d-550c-4a9b-...` 을 조각내면 하이픈을 음수 부호로 읽어 `-550` 까지 나온다.
+실측에서 UUID 하나가 아홉 개의 "근거 없는 수치" 가 됐다. `dart:00113058`,
+`722Y001`, `req-demo` 도 같은 문제를 만든다.
+
+조각 단위로 인정하면 안 된다 — 지어낸 식별자의 조각도 대개 어딘가에 있기 때문이다.
+**전체가 그대로 있어야 근거로 친다.**
+
+**그리고 모델은 ISO 로 쓰지 않는다.** 실측에서 답변 6건이 막혔는데 원인이 전부
+`2026년 9월 5일` 형태였다. 연도와 월은 우연히 통과하고 일자만 걸린다. 그래서
+한국어 표기(`년 월 일`)와 점·슬래시 구분자도 날짜로 인식한다. 연·월만, 월·일만
+쓴 형태도 있으므로 **있는 자리만 대조**한다.
+
 ## 실모델 산문에서만 드러난 것 (2026-09-09 실호출)
 
 결정론적 요약문으로 잰 오탐률은 0이었다. 실제 모델 답변에 처음 돌리자 세 종류가
@@ -54,8 +67,27 @@ from dataclasses import dataclass, field
 _NUMBER = re.compile(r"[-−]?\d[\d,]*(?:\.\d+)?")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# 도구는 시각을 ISO 로 반환하고 모델은 그대로 옮긴다. 날짜만 떼면 뒤의
+# 시·분·초와 마이크로초가 조각난다 — 실측에서 508517 이 그렇게 잡혔다.
+_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+
+# 모델이 실제로 쓰는 날짜 표기들. 있는 자리만 대조하려고 각각 따로 잡는다.
+# 넓은 것부터 좁은 것 순서여야 "2026년 9월 5일" 이 "2026년 9월" 로 먼저 먹히지 않는다.
+_DATE_FORMS = (
+    re.compile(r"(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})\s*일?"),
+    re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월"),
+    re.compile(r"(?<![\d년])(\d{1,2})\s*월\s*(\d{1,2})\s*일"),
+)
+
 # 비율을 백분율로 읽은 경우만 100배를 허용한다. 숫자 바로 뒤의 % 기호를 본다.
 _PERCENT_SUFFIX = re.compile(r"\s*%")
+
+# 식별자로 볼 토큰. 글자와 숫자가 섞인 코드·id 다. 날짜는 글자가 없어 걸리지 않는다.
+# 구분자(- :)는 영숫자 **사이에만** 허용한다. 끝에 붙이면 "p90:" 처럼
+# 문장부호까지 삼켜 도구 반환값과 대조되지 않는다.
+_IDENTIFIER = re.compile(r"[A-Za-z0-9_]+(?:[-:][A-Za-z0-9_]+)*")
 
 # 마크다운 순서 목록 표식. 줄머리의 "2." 나 "**2.**" 는 측정값이 아니다.
 _LIST_MARKER = re.compile(r"^[ \t]*(?:[*_]{0,2})\d+[.)](?:[*_]{0,2})(?=\s)", re.MULTILINE)
@@ -116,6 +148,63 @@ def _date_values(source: object) -> set[str]:
     return dates
 
 
+def _digits(value: str) -> str:
+    return "".join(ch for ch in value if ch.isdigit())
+
+
+def _stamp_digits(text: str) -> list[str]:
+    """도구가 준 시각들을 숫자만 남긴 형태로. 모델이 다시 포맷해도 접두로 맞는다.
+
+    2026-09-08T00:55:13.508517+00:00 -> "202609080055135085170000"
+    모델이 "2026-09-08 00:55:13" 으로 줄여 써도 그 접두라서 대조된다.
+    """
+    return [_digits(m.group()) for m in _TIMESTAMP.finditer(text)]
+
+
+def _identifier_like(token: str) -> bool:
+    """코드나 id 로 볼 만한가. 숫자와 글자가 섞여 있고 순수 수치가 아니어야 한다."""
+    if not any(ch.isdigit() for ch in token):
+        return False
+    return any(ch.isalpha() for ch in token)
+
+
+def _text_values(source: object) -> set[str]:
+    """도구 반환값에 문자열로 등장한 모든 것. 식별자를 통째로 대조하는 데 쓴다."""
+    return {str(leaf) for leaf in _walk(source) if isinstance(leaf, str)}
+
+
+def _date_parts(dates: set[str]) -> list[tuple[int, int, int]]:
+    parts = []
+    for value in dates:
+        year, month, day = value.split("-")
+        parts.append((int(year), int(month), int(day)))
+    return parts
+
+
+def _known_date(fields: tuple[int | None, int | None, int | None], known) -> bool:
+    """있는 자리만 대조한다. 연도를 안 쓴 표기도 모델은 실제로 쓴다."""
+    year, month, day = fields
+    for candidate in known:
+        if year is not None and year != candidate[0]:
+            continue
+        if month is not None and month != candidate[1]:
+            continue
+        if day is not None and day != candidate[2]:
+            continue
+        return True
+    return False
+
+
+def _fields_of(match: re.Match) -> tuple[int | None, int | None, int | None]:
+    groups = [int(g) for g in match.groups()]
+    if len(groups) == 3:
+        return groups[0], groups[1], groups[2]
+    # 두 자리만 있는 형태. 첫 값이 4자리면 연·월, 아니면 월·일이다.
+    if groups[0] > 31:
+        return groups[0], groups[1], None
+    return None, groups[0], groups[1]
+
+
 def _parse(token: str) -> float | None:
     cleaned = token.replace(",", "").replace("−", "-")
     try:
@@ -161,17 +250,54 @@ def check_grounding(answer: str, *, tool_results: list, prompt_text: str) -> Gro
 
     # 목록 번호를 먼저 지운다. 측정값이 아니라 서식이다.
     remaining = _LIST_MARKER.sub(" ", answer)
-    # 날짜를 처리하고 본문에서 지운다. 남은 자리에서 숫자를 찾는다.
-    answer = remaining
-    for date in _ISO_DATE.findall(answer):
+
+    tool_text = " ".join(_text_values(tool_results))
+    prompt_text_all = str(prompt_text)
+
+    # 시각을 가장 먼저 통째로 처리한다. 날짜 규칙보다 앞이어야 뒤가 안 남는다.
+    tool_stamps = _stamp_digits(tool_text)
+    prompt_stamps = _stamp_digits(prompt_text_all)
+    for match in list(_TIMESTAMP.finditer(remaining)):
+        token = match.group()
+        stated = _digits(token)
         checked += 1
-        if date in tool_dates:
-            sources[date] = "tool"
-        elif date in prompt_dates:
-            sources[date] = "prompt"
-        elif date not in ungrounded:
-            ungrounded.append(date)
-        remaining = remaining.replace(date, " ")
+        if any(known.startswith(stated) for known in tool_stamps):
+            sources[token] = "tool"
+        elif any(known.startswith(stated) for known in prompt_stamps):
+            sources.setdefault(token, "prompt")
+        elif token not in ungrounded:
+            ungrounded.append(token)
+        remaining = remaining.replace(token, " ", 1)
+
+    # 식별자를 통째로 처리한다. 숫자보다 앞이어야 조각나지 않는다.
+    for match in list(_IDENTIFIER.finditer(remaining)):
+        token = match.group()
+        if not _identifier_like(token):
+            continue
+        checked += 1
+        if token in tool_text:
+            sources[token] = "tool"
+        elif token in prompt_text_all:
+            sources.setdefault(token, "prompt")
+        elif token not in ungrounded:
+            ungrounded.append(token)
+        remaining = remaining.replace(token, " ", 1)
+
+    # 날짜를 처리하고 본문에서 지운다. 남은 자리에서 숫자를 찾는다.
+    tool_parts = _date_parts(tool_dates)
+    prompt_parts = _date_parts(prompt_dates)
+    for pattern in _DATE_FORMS:
+        for match in list(pattern.finditer(remaining)):
+            token = match.group().strip()
+            fields = _fields_of(match)
+            checked += 1
+            if _known_date(fields, tool_parts):
+                sources[token] = "tool"
+            elif _known_date(fields, prompt_parts):
+                sources.setdefault(token, "prompt")
+            elif token not in ungrounded:
+                ungrounded.append(token)
+            remaining = remaining.replace(match.group(), " ", 1)
 
     for match in _NUMBER.finditer(remaining):
         token = match.group()
