@@ -155,3 +155,69 @@ def test_the_report_is_a_typed_result_not_a_bool():
 
     assert isinstance(report, GroundingReport)
     assert report.checked >= 1
+
+
+# --- 실모델 산문에서 드러난 오탐 세 종류 (2026-09-09 실호출) -------------------
+
+
+def test_truncating_instead_of_rounding_is_not_a_hallucination():
+    """도구가 0.014538 을 주고 모델이 "0.014σ" 라고 썼다. 버림도 정직한 표기다.
+
+    반올림만 인정하면 0.015 만 통과하고 0.014 는 환각으로 몰린다.
+    """
+    report = check_grounding(
+        "스프레드가 0.014σ 수준으로 유지됐다.",
+        tool_results=_facts(z=0.014538953878225442),
+        prompt_text="",
+    )
+
+    assert report.ok
+
+
+def test_widening_for_truncation_does_not_let_a_wrong_value_through():
+    """마지막 자리 하나만 넓힌다. 0.014538 을 0.019 로 쓰는 것은 여전히 잡는다."""
+    report = check_grounding(
+        "스프레드가 0.019σ다.", tool_results=_facts(z=0.014538953878225442), prompt_text=""
+    )
+
+    assert not report.ok
+
+
+def test_a_field_name_the_tool_returned_is_not_a_numeric_claim():
+    """모델이 "p90" 이라고 쓰면 90 이 수치 주장처럼 잡힌다.
+
+    noise_p90 은 도구가 반환한 **키 이름**이다. 값이 아니라 이름을 인용한 것이다.
+    """
+    report = check_grounding(
+        "허용 노이즈 수준(p90: 약 0.063)을 넘지 않았다.",
+        tool_results=_facts(noise_p90=0.063),
+        prompt_text="",
+    )
+
+    assert report.ok
+
+
+def test_markdown_list_numbering_is_not_a_measurement():
+    """모델은 근거를 번호 목록으로 쓴다. 그 번호가 수치 주장으로 잡히면 안 된다.
+
+    실호출에서 1과 3은 우연히 통과하고 2만 잡혔다. 그 자체가 잡음이라는 증거다.
+    """
+    answer = "1. 원본이 없다.\n2. 연동 계열이 미동조했다.\n3. 승인이 취소됐다."
+
+    report = check_grounding(answer, tool_results=[], prompt_text="")
+
+    assert report.ok, f"목록 번호가 수치로 잡혔다: {report.ungrounded}"
+
+
+def test_a_bold_markdown_list_marker_is_also_ignored():
+    report = check_grounding("**2.** 두 번째 근거다.", tool_results=[], prompt_text="")
+
+    assert report.ok
+
+
+def test_a_number_in_prose_is_still_checked_even_next_to_a_list():
+    """목록 번호를 무시하되 본문의 수치는 계속 검사해야 한다."""
+    report = check_grounding("1. 기준금리는 4.25다.", tool_results=[], prompt_text="")
+
+    assert not report.ok
+    assert "4.25" in report.ungrounded
