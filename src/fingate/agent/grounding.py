@@ -28,8 +28,25 @@ LLM 버전이다.
 날짜는 숫자 셋으로 쪼개지 않고 통째로 대조한다. 쪼개면 `2026-09-04`가
 2026·09·04 세 개의 근거를 요구하게 되고, 그중 하나라도 없으면 정상 답변이
 환각으로 몰린다.
+
+## 실모델 산문에서만 드러난 것 (2026-09-09 실호출)
+
+결정론적 요약문으로 잰 오탐률은 0이었다. 실제 모델 답변에 처음 돌리자 세 종류가
+나왔고, **셋 다 검증기의 오탐이었다. 진짜 환각은 0건이었다.**
+
+1. **버림.** 도구가 `0.014538` 을 주고 모델은 `0.014σ` 라고 썼다. 반올림이면
+   `0.015` 다. 버림도 사람이 쓰는 정직한 표기이므로 마지막 자리 하나만 넓혀
+   인정한다. `0.019` 는 여전히 잡힌다.
+2. **필드 이름.** `p90` 의 `90`. `noise_p90` 은 도구가 반환한 **키 이름**이다.
+   값이 아니라 이름을 인용한 것이므로 키에 들어 있는 숫자도 근거로 인정한다.
+3. **목록 번호.** 모델은 근거를 `1. 2. 3.` 으로 쓴다. 실호출에서 1과 3은 우연히
+   통과하고 2만 잡혔다 — 그 자체가 이것이 수치 주장이 아니라는 증거다.
+
+세 번째가 특히 T-20과 같은 교훈이다. **요약문으로 재고 "오탐 0" 이라고 적은 것이
+실제 문장 형태를 덮지 못했다.** 무엇을 재고 있는지가 항상 먼저다.
 """
 
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -39,6 +56,9 @@ _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # 비율을 백분율로 읽은 경우만 100배를 허용한다. 숫자 바로 뒤의 % 기호를 본다.
 _PERCENT_SUFFIX = re.compile(r"\s*%")
+
+# 마크다운 순서 목록 표식. 줄머리의 "2." 나 "**2.**" 는 측정값이 아니다.
+_LIST_MARKER = re.compile(r"^[ \t]*(?:[*_]{0,2})\d+[.)](?:[*_]{0,2})(?=\s)", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -60,9 +80,13 @@ class GroundingReport:
 
 
 def _walk(value: object) -> list[object]:
-    """중첩 구조를 평탄화한다. probe 의 facts 는 리스트 안의 딕셔너리다."""
+    """중첩 구조를 평탄화한다. probe 의 facts 는 리스트 안의 딕셔너리다.
+
+    **키 이름도 함께 낸다.** 모델은 `noise_p90` 을 "p90" 이라고 인용한다.
+    값이 아니라 도구가 준 이름을 옮긴 것이므로 근거로 인정해야 한다.
+    """
     if isinstance(value, dict):
-        return [item for child in value.values() for item in _walk(child)]
+        return [*value.keys()] + [item for child in value.values() for item in _walk(child)]
     if isinstance(value, (list, tuple)):
         return [item for child in value for item in _walk(child)]
     return [value]
@@ -110,9 +134,15 @@ def _matches(stated: str, candidate: float, *, as_percent: bool) -> bool:
     if value is None:
         return False
     scaled = candidate * 100 if as_percent else candidate
-    # 표시된 자릿수로 반올림했을 때 같으면 같은 값을 읽기 좋게 쓴 것이다.
     places = _decimals(stated)
-    return round(scaled, places) == round(value, places)
+    stated_value = round(value, places)
+    if round(scaled, places) == stated_value:
+        return True
+    # 버림도 사람이 쓰는 표기다. 마지막 자리 하나만 넓힌다 — 그 이상 열면
+    # 어긋난 값이 통과하기 시작한다.
+    step = 10.0**-places
+    truncated = math.floor(abs(scaled) / step) * step * (1 if scaled >= 0 else -1)
+    return round(truncated, places) == stated_value
 
 
 def check_grounding(answer: str, *, tool_results: list, prompt_text: str) -> GroundingReport:
@@ -129,8 +159,10 @@ def check_grounding(answer: str, *, tool_results: list, prompt_text: str) -> Gro
     ungrounded: list[str] = []
     checked = 0
 
-    # 날짜를 먼저 처리하고 본문에서 지운다. 남은 자리에서 숫자를 찾는다.
-    remaining = answer
+    # 목록 번호를 먼저 지운다. 측정값이 아니라 서식이다.
+    remaining = _LIST_MARKER.sub(" ", answer)
+    # 날짜를 처리하고 본문에서 지운다. 남은 자리에서 숫자를 찾는다.
+    answer = remaining
     for date in _ISO_DATE.findall(answer):
         checked += 1
         if date in tool_dates:

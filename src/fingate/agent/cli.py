@@ -118,6 +118,17 @@ def main(argv: list[str] | None = None) -> int:
         except KeyError as error:
             print(str(error).strip("'"), file=sys.stderr)
             return 1
+        except Exception as error:  # noqa: BLE001 - 공급자 SDK 예외는 종류가 제각각이다
+            # 스택트레이스를 그대로 쏟으면 무엇이 잘못됐는지 오히려 안 보인다.
+            # 모델에게 그러면 안 되는 것과 같은 이유로 운영자에게도 그러지 않는다.
+            print(f"모델 호출 실패: {type(error).__name__}", file=sys.stderr)
+            print(f"  {str(error).splitlines()[0][:300]}", file=sys.stderr)
+            print(
+                "\n모델명이 원인이면 --model 로 지정할 수 있다. "
+                "근거 조립과 검증은 fingate-review 로 키 없이 확인할 수 있다.",
+                file=sys.stderr,
+            )
+            return 1
 
     print(f"공급자: {provider}")
     print(f"질문: {args.question}\n")

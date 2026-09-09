@@ -30,6 +30,10 @@ class ToolUseBlock:
     input: dict
     id: str
     type: str = "tool_use"
+    # 공급자가 도구 호출에 붙여 보낸 불투명 상태. 이력에 되돌려줄 때 그대로
+    # 다시 붙여야 하는 경우가 있다. Gemini 3.x 의 thought_signature 가 그렇다 —
+    # 빠지면 400 이 나고, 정규화하면서 버리기 쉽다.
+    provider_state: object = None
 
 
 @dataclass(frozen=True)

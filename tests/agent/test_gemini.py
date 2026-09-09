@@ -197,3 +197,20 @@ def test_the_anthropic_model_name_is_not_sent_to_gemini():
     )
 
     assert models.seen[0]["model"] == "gemini-2.5-pro"
+
+
+def test_a_thought_signature_survives_the_round_trip():
+    """Gemini 3.x 는 도구 호출을 되돌려줄 때 받은 서명을 요구한다. 없으면 400.
+
+    2026-09-09 실호출에서 실제로 겪었다. 공급자 중립 블록으로 정규화하면
+    정확히 이 값이 버려진다.
+    """
+    call = Call(name="get_exception", args={"exception_id": "x"})
+    part = Part(function_call=call)
+    part.thought_signature = b"sig-abc"
+
+    reply = _reply_of(Response([Candidate(Content([part]))]))
+    assert reply.content[0].provider_state == b"sig-abc"
+
+    converted = _contents([{"role": "assistant", "content": reply.content}])
+    assert converted[0].parts[0].thought_signature == b"sig-abc"

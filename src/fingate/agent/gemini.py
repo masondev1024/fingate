@@ -16,6 +16,9 @@
 - 도구 결과를 되돌려줄 때 Gemini는 호출 **id 가 아니라 함수 이름**을 요구한다.
   그래서 어댑터가 대화를 변환하면서 id -> 이름 대응을 만들어 둔다.
 - Gemini의 역할 이름은 `model` 이고 Anthropic은 `assistant` 다.
+- Gemini 3.x 는 도구 호출을 이력에 되돌려줄 때 **함께 온 `thought_signature` 를
+  그대로 다시 붙일 것**을 요구한다. 없으면 400 이다. 응답을 공급자 중립 블록으로
+  정규화하면 정확히 이 값이 버려지므로, 블록이 불투명 상태로 실어 나른다.
 """
 
 import json
@@ -23,7 +26,10 @@ from typing import Any
 
 from .blocks import ModelReply, TextBlock, ToolUseBlock
 
-DEFAULT_MODEL = "gemini-2.5-pro"
+# 2026-09-09 실측: gemini-2.5-pro 는 신규 사용자에게 404 를 준다. API 가
+# 후속 모델로 gemini-3.1-pro-preview 를 지목했다. 모델명은 계정별로 다를 수
+# 있으므로 --model 로 덮어쓸 수 있다.
+DEFAULT_MODEL = "gemini-3.1-pro-preview"
 
 
 def _tool_declarations(tools: list[dict]):
@@ -72,7 +78,14 @@ def _parts_of(content: Any, names: dict[str, str]):
             parts.append(types.Part.from_text(text=block.text))
         elif kind == "tool_use":
             names[block.id] = block.name
-            parts.append(types.Part.from_function_call(name=block.name, args=dict(block.input)))
+            call = types.FunctionCall(name=block.name, args=dict(block.input))
+            # 받은 서명을 그대로 되돌려준다. 새로 만들 수 있는 값이 아니다.
+            parts.append(
+                types.Part(
+                    function_call=call,
+                    thought_signature=getattr(block, "provider_state", None),
+                )
+            )
     return parts
 
 
@@ -134,6 +147,7 @@ def _reply_of(response: Any) -> ModelReply:
                     name=call.name,
                     input=dict(call.args or {}),
                     id=getattr(call, "id", None) or f"{call.name}-{index}",
+                    provider_state=getattr(part, "thought_signature", None),
                 )
             )
             continue
