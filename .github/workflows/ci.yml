@@ -21,7 +21,9 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra dev --locked
+        # agent-gemini 까지 넣는다. 넣지 않으면 어댑터 테스트가 importorskip 으로
+        # 조용히 건너뛰어, 깨져도 CI 가 녹색으로 남는다. 자격 증명은 여전히 필요 없다.
+        run: uv sync --extra dev --extra agent-gemini
 
       - name: Lint
         run: |

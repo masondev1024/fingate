@@ -20,6 +20,8 @@ dev = ["pytest>=8.2", "ruff>=0.5"]
 # 에이전트 계층만 필요로 한다. 수집·계약·게이트·리뷰어는 이것 없이 동작하고
 # CI 도 자격 증명 없이 돈다.
 agent = ["anthropic>=0.69"]
+# 같은 에이전트 루프를 Gemini 로도 돌린다. 어댑터만 다르고 근거 고정은 공통이다.
+agent-gemini = ["google-genai>=1.0"]
 
 [build-system]
 requires = ["hatchling"]
