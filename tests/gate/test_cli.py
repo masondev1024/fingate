@@ -62,6 +62,8 @@ def test_approve_records_the_decision(audit, capsys):
             "mason",
             "--note",
             "금통위 인상 확인",
+            "--now",
+            NOW.isoformat(),
         ]
     )
     assert code == 0
@@ -82,6 +84,8 @@ def test_reject_records_the_decision(audit):
             "mason",
             "--note",
             "수집 오류로 판단",
+            "--now",
+            NOW.isoformat(),
         ]
     )
     rejected = ExceptionLedger(audit).list(status=ExceptionStatus.REJECTED)
@@ -153,6 +157,8 @@ def test_decision_is_visible_to_a_later_process(audit, capsys):
             "mason",
             "--note",
             "확인",
+            "--now",
+            NOW.isoformat(),
         ]
     )
     ledger = ExceptionLedger(audit)
